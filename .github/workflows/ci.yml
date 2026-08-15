@@ -1,0 +1,62 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  backend:
+    name: Backend tests
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install backend dependencies
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          if ((Test-Path backend/requirements.txt) -and ((Get-Item backend/requirements.txt).Length -gt 0)) {
+            pip install -r backend/requirements.txt
+          }
+          if ((Test-Path requirements.txt) -and ((Get-Item requirements.txt).Length -gt 0)) {
+            pip install -r requirements.txt
+          }
+          pip install pytest
+
+      - name: Run backend tests
+        run: pytest tests
+
+  frontend:
+    name: Frontend build
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        shell: pwsh
+        run: |
+          if (Test-Path package-lock.json) {
+            npm ci
+          } else {
+            npm install
+          }
+
+      - name: Build frontend
+        working-directory: frontend
+        run: npm run build --if-present
