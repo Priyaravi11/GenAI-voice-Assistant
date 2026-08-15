@@ -32,7 +32,14 @@ jobs:
           pip install pytest
 
       - name: Run backend tests
-        run: pytest tests
+        shell: pwsh
+        run: |
+          pytest tests
+          if ($LASTEXITCODE -eq 5) {
+            Write-Host "No tests collected yet; skipping until tests are added."
+            exit 0
+          }
+          exit $LASTEXITCODE
 
   frontend:
     name: Frontend build
