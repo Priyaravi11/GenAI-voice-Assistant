@@ -1,8 +1,8 @@
 import csv
 from pathlib import Path
 
-from embeddings.embedding_model import EmbeddingModel
-from vector_store.collection import get_collection
+from rag.embeddings.embedding_model import EmbeddingModel
+from rag.vector_store.collection import get_collection
 
 
 # ============================================================

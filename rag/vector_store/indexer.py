@@ -1,4 +1,4 @@
-from vector_store.collection import get_collection
+from rag.vector_store.collection import get_collection
 
 
 def index_chunks(chunks, embeddings):

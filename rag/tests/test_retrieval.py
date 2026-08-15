@@ -1,4 +1,4 @@
-from vector_store.retriever import Retriever
+from rag.vector_store.retriever import Retriever
 
 
 # ---------------------------------------------------------

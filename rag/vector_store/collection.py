@@ -1,4 +1,4 @@
-from vector_store.client import get_chroma_client
+from rag.vector_store.client import get_chroma_client
 
 
 COLLECTION_NAME = "customer_care_knowledge"

@@ -1,4 +1,4 @@
-from context.context_builder import ContextBuilder
+from rag.context.context_builder import ContextBuilder
 
 
 def test_context_builder():

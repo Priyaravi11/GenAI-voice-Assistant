@@ -1,6 +1,6 @@
 from sentence_transformers import SentenceTransformer
 
-from embeddings.embedding_config import (
+from rag.embeddings.embedding_config import (
     EMBEDDING_MODEL_NAME,
     EMBEDDING_DIMENSION,
     NORMALIZE_EMBEDDINGS,

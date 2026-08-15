@@ -1,6 +1,6 @@
-from vector_store.retriever import Retriever
-from query.intent_mapper import build_metadata_filter
-from context.context_builder import ContextBuilder
+from rag.vector_store.retriever import Retriever
+from rag.query.intent_mapper import build_metadata_filter
+from rag.context.context_builder import ContextBuilder
 
 
 class QueryProcessor:

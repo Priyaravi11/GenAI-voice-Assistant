@@ -1,4 +1,4 @@
-from query.query_processor import QueryProcessor
+from rag.query.query_processor import QueryProcessor
 from pprint import pprint
 
 
