@@ -9,8 +9,18 @@ No Twilio, no network calls, no credentials, no gemini.py needed —
 pure logic test covering all 6 languages from gemini.py's
 SUPPORTED_LANGUAGES list.
 """
+import os
+import sys
+
+_THIS_DIR = os.path.dirname(os.path.abspath(__file__))
+_PROJECT_ROOT = os.path.dirname(_THIS_DIR)
+_BACKEND_APP = os.path.join(_PROJECT_ROOT, "backend", "app")
+if _BACKEND_APP not in sys.path:
+    sys.path.insert(0, _BACKEND_APP)
+
 
 from escalation import EscalationManager
+
 
 LANGUAGES_TO_TEST = ["English", "Tamil", "Hindi", "Telugu", "Kannada", "Malayalam"]
 
