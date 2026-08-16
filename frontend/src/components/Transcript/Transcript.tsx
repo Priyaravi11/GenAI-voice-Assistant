@@ -1,3 +1,4 @@
+import React from "react";
 import type { TranscriptEntry } from "../../types";
 import TranscriptMessage from "./TranscriptMessage";
 
@@ -5,7 +6,7 @@ type TranscriptProps = {
   entries: TranscriptEntry[];
 };
 
-function Transcript({ entries }: TranscriptProps) {
+const Transcript = React.memo(function Transcript({ entries }: TranscriptProps) {
   return (
     <section className="panel transcript-panel">
       <div className="panel-heading">
@@ -22,6 +23,6 @@ function Transcript({ entries }: TranscriptProps) {
       </div>
     </section>
   );
-}
+});
 
 export default Transcript;

@@ -1,9 +1,11 @@
+import React from "react";
+
 type VoiceButtonProps = {
   active: boolean;
   onToggle: () => void;
 };
 
-function VoiceButton({ active, onToggle }: VoiceButtonProps) {
+const VoiceButton = React.memo(function VoiceButton({ active, onToggle }: VoiceButtonProps) {
   return (
     <button
       className={active ? "voice-button active" : "voice-button"}
@@ -15,6 +17,6 @@ function VoiceButton({ active, onToggle }: VoiceButtonProps) {
       {active ? "Listening" : "Push to Talk"}
     </button>
   );
-}
+});
 
 export default VoiceButton;

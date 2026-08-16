@@ -1,10 +1,20 @@
-import { useEffect, useMemo, useState } from "react";
-import Dashboard from "./pages/Dashboard/Dashboard";
-import LiveCall from "./pages/LiveCall/LiveCall";
-import CallLogs from "./pages/CallLogs/CallLogs";
-import Analytics from "./pages/Analytics/Analytics";
-import HumanAgent from "./pages/HumanAgent/HumanAgent";
+import { useEffect, useMemo, useState, lazy, Suspense } from "react";
 import type { AppView, ThemePreference } from "./types";
+
+// Lazy-loaded pages for code splitting
+const Dashboard = lazy(() => import("./pages/Dashboard/Dashboard"));
+const LiveCall = lazy(() => import("./pages/LiveCall/LiveCall"));
+const CallLogs = lazy(() => import("./pages/CallLogs/CallLogs"));
+const Analytics = lazy(() => import("./pages/Analytics/Analytics"));
+const HumanAgent = lazy(() => import("./pages/HumanAgent/HumanAgent"));
+
+// Simple loading fallback component
+const PageLoader = () => (
+  <div className="loading-state" style={{ minHeight: "400px" }}>
+    <span style={{ display: "inline-block" }} />
+    <p>Loading...</p>
+  </div>
+);
 
 const navigation: Array<{
   id: AppView;
@@ -54,12 +64,12 @@ function App() {
   }, []);
 
   const page = useMemo(() => {
-    if (activeView === "live") return <LiveCall />;
-    if (activeView === "logs") return <CallLogs />;
-    if (activeView === "analytics") return <Analytics />;
-    if (activeView === "agents") return <HumanAgent />;
-    if (activeView === "config") return <HumanAgent mode="config" />;
-    return <Dashboard onNavigate={setActiveView} />;
+    if (activeView === "live") return <Suspense fallback={<PageLoader />}><LiveCall /></Suspense>;
+    if (activeView === "logs") return <Suspense fallback={<PageLoader />}><CallLogs /></Suspense>;
+    if (activeView === "analytics") return <Suspense fallback={<PageLoader />}><Analytics /></Suspense>;
+    if (activeView === "agents") return <Suspense fallback={<PageLoader />}><HumanAgent /></Suspense>;
+    if (activeView === "config") return <Suspense fallback={<PageLoader />}><HumanAgent mode="config" /></Suspense>;
+    return <Suspense fallback={<PageLoader />}><Dashboard onNavigate={setActiveView} /></Suspense>;
   }, [activeView]);
 
   return (

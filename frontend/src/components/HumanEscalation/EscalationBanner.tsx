@@ -1,8 +1,10 @@
+import React from "react";
+
 type EscalationBannerProps = {
   reason: string;
 };
 
-function EscalationBanner({ reason }: EscalationBannerProps) {
+const EscalationBanner = React.memo(function EscalationBanner({ reason }: EscalationBannerProps) {
   return (
     <section className="escalation-banner">
       <div>
@@ -15,6 +17,6 @@ function EscalationBanner({ reason }: EscalationBannerProps) {
       <button type="button">Assign Specialist</button>
     </section>
   );
-}
+});
 
 export default EscalationBanner;

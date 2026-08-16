@@ -1,10 +1,11 @@
+import React from "react";
 import type { TranscriptEntry } from "../../types";
 
 type TranscriptMessageProps = {
   entry: TranscriptEntry;
 };
 
-function TranscriptMessage({ entry }: TranscriptMessageProps) {
+const TranscriptMessage = React.memo(function TranscriptMessage({ entry }: TranscriptMessageProps) {
   return (
     <article className={`transcript-message ${entry.speaker.toLowerCase().replace(" ", "-")}`}>
       <header>
@@ -21,6 +22,6 @@ function TranscriptMessage({ entry }: TranscriptMessageProps) {
       </footer>
     </article>
   );
-}
+});
 
 export default TranscriptMessage;

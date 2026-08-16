@@ -1,3 +1,4 @@
+import React from "react";
 import VoiceButton from "./VoiceButton";
 
 type VoiceInterfaceProps = {
@@ -6,7 +7,7 @@ type VoiceInterfaceProps = {
   onToggle: () => void;
 };
 
-function VoiceInterface({ active, language, onToggle }: VoiceInterfaceProps) {
+const VoiceInterface = React.memo(function VoiceInterface({ active, language, onToggle }: VoiceInterfaceProps) {
   return (
     <section className="voice-console">
       <div className="voice-stage">
@@ -30,6 +31,6 @@ function VoiceInterface({ active, language, onToggle }: VoiceInterfaceProps) {
       </div>
     </section>
   );
-}
+});
 
 export default VoiceInterface;

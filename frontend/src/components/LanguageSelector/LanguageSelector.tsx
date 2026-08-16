@@ -1,3 +1,5 @@
+import React from "react";
+
 const languages = [
   "English (US)",
   "Hindi (hi)",
@@ -12,7 +14,7 @@ type LanguageSelectorProps = {
   onChange: (language: string) => void;
 };
 
-function LanguageSelector({ value, onChange }: LanguageSelectorProps) {
+const LanguageSelector = React.memo(function LanguageSelector({ value, onChange }: LanguageSelectorProps) {
   return (
     <label className="field-control">
       Voice Language
@@ -23,6 +25,6 @@ function LanguageSelector({ value, onChange }: LanguageSelectorProps) {
       </select>
     </label>
   );
-}
+});
 
 export default LanguageSelector;
