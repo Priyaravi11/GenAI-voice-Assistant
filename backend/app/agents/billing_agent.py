@@ -4,6 +4,13 @@ from typing import Any, Dict, Optional
 from app.gemini import generate_text
 from app.rag import rag_service
 
+from tools.billing_tool import (
+    get_current_bill,
+    get_previous_bill,
+    get_bill_history,
+    check_duplicate_bill,
+)
+
 
 logger = logging.getLogger(__name__)
 
@@ -14,12 +21,10 @@ class BillingAgent:
 
     Handles:
         - Current bill
+        - Previous bill
         - Billing history
-        - Charges
-        - Invoices
-        - Due dates
-        - Late fees
-        - Billing-related questions
+        - Duplicate bills
+        - Billing policy / general billing questions
 
     Communication:
 
@@ -27,23 +32,12 @@ class BillingAgent:
           ↓
         Billing Agent
           ↓
-        RAG
-          ↓
-        Billing Tool (when available)
+        RAG + Billing Tool
           ↓
         Gemini
           ↓
-        Final response
+        Final Response
     """
-
-    def __init__(self, billing_tool=None):
-        """
-        billing_tool is injected later by the orchestrator.
-
-        We keep it optional because the actual billing_tool.py
-        is not available yet.
-        """
-        self.billing_tool = billing_tool
 
     # ==========================================================
     # MAIN ENTRY POINT
@@ -54,16 +48,6 @@ class BillingAgent:
         query: str,
         context: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
-        """
-        Main method used by the orchestrator.
-
-        Example:
-
-            result = await billing_agent.handle(
-                "Why is my bill so high?",
-                context
-            )
-        """
 
         context = context or {}
 
@@ -82,27 +66,40 @@ class BillingAgent:
         try:
 
             # --------------------------------------------------
-            # 1. Retrieve billing knowledge
+            # 1. Retrieve billing knowledge from RAG
             # --------------------------------------------------
 
-            rag_context = self._retrieve_billing_knowledge(
+            rag_context = self._retrieve_rag(
                 query=query,
                 context=context,
             )
 
             # --------------------------------------------------
-            # 2. Get customer-specific billing information
-            #    when required
+            # 2. Decide whether a billing tool is required
             # --------------------------------------------------
 
-            customer_data = None
+            billing_data = None
 
-            if self._requires_customer_data(query):
+            tool_name = self._select_billing_tool(query)
 
-                customer_data = await self._get_customer_billing(
-                    query=query,
-                    context=context,
+            if tool_name:
+
+                customer_id = context.get(
+                    "customer_id"
                 )
+
+                if not customer_id:
+
+                    logger.warning(
+                        "Customer ID not found in context."
+                    )
+
+                else:
+
+                    billing_data = self._call_billing_tool(
+                        tool_name=tool_name,
+                        customer_id=customer_id,
+                    )
 
             # --------------------------------------------------
             # 3. Generate final answer using Gemini
@@ -111,7 +108,7 @@ class BillingAgent:
             response = await self._generate_response(
                 query=query,
                 rag_context=rag_context,
-                customer_data=customer_data,
+                billing_data=billing_data,
                 context=context,
             )
 
@@ -119,6 +116,7 @@ class BillingAgent:
                 "agent": "billing",
                 "response": response,
                 "success": True,
+                "tool_used": tool_name,
             }
 
         except Exception as exc:
@@ -129,36 +127,19 @@ class BillingAgent:
             )
 
             return self._error_response(
-                "I’m sorry, I couldn't process your billing "
-                "request right now."
+                "I'm sorry, I couldn't process your "
+                "billing request right now."
             )
 
     # ==========================================================
     # RAG
     # ==========================================================
 
-    def _retrieve_billing_knowledge(
+    def _retrieve_rag(
         self,
         query: str,
         context: Dict[str, Any],
     ) -> Optional[Dict[str, Any]]:
-        """
-        Retrieve billing knowledge using the existing RAGService.
-
-        Your actual RAG interface is:
-
-            rag_service.search(
-                query=...,
-                request_id=...,
-                language=...,
-                intent=...,
-                entities=...,
-                sentiment=...,
-                code_switched=...
-            )
-
-        RAG is synchronous, so we DO NOT use await here.
-        """
 
         try:
 
@@ -172,18 +153,7 @@ class BillingAgent:
                 "en",
             )
 
-            # --------------------------------------------------
-            # Your context may contain language as:
-            #
-            # "ta"
-            #
-            # or:
-            #
-            # {"primary": "ta"}
-            # --------------------------------------------------
-
             if isinstance(language, dict):
-
                 language = language.get(
                     "primary",
                     "en",
@@ -200,7 +170,6 @@ class BillingAgent:
             )
 
             if isinstance(sentiment, dict):
-
                 sentiment = sentiment.get(
                     "label",
                     "neutral",
@@ -211,6 +180,7 @@ class BillingAgent:
                 False,
             )
 
+            # Your RAG search() is synchronous.
             rag_result = rag_service.search(
                 query=query,
                 request_id=request_id,
@@ -233,106 +203,167 @@ class BillingAgent:
             return None
 
     # ==========================================================
-    # BILLING TOOL
+    # TOOL SELECTION
     # ==========================================================
 
-    async def _get_customer_billing(
-        self,
+    @staticmethod
+    def _select_billing_tool(
         query: str,
-        context: Dict[str, Any],
-    ) -> Any:
+    ) -> Optional[str]:
         """
-        Retrieve customer-specific billing information.
+        Decide which billing tool should be called.
 
-        The exact billing tool method will be connected once
-        billing_tool.py is available.
+        Available tools:
+
+            get_current_bill()
+            get_previous_bill()
+            get_bill_history()
+            check_duplicate_bill()
         """
 
-        if self.billing_tool is None:
+        text = query.lower()
 
-            logger.info(
-                "Billing tool is not available yet."
+        # ------------------------------------------------------
+        # Duplicate bill
+        # ------------------------------------------------------
+
+        duplicate_keywords = [
+            "duplicate bill",
+            "duplicate billing",
+            "charged twice",
+            "billed twice",
+            "bill twice",
+            "same bill twice",
+            "double charge",
+            "double billing",
+        ]
+
+        if any(
+            keyword in text
+            for keyword in duplicate_keywords
+        ):
+            return "check_duplicate_bill"
+
+        # ------------------------------------------------------
+        # Billing history
+        # ------------------------------------------------------
+
+        history_keywords = [
+            "billing history",
+            "bill history",
+            "billing records",
+            "previous bills",
+            "past bills",
+            "old bills",
+            "all my bills",
+            "show my bills",
+        ]
+
+        if any(
+            keyword in text
+            for keyword in history_keywords
+        ):
+            return "get_bill_history"
+
+        # ------------------------------------------------------
+        # Previous bill
+        # ------------------------------------------------------
+
+        previous_keywords = [
+            "previous bill",
+            "last bill",
+            "old bill",
+            "last month's bill",
+            "previous month's bill",
+            "previous invoice",
+        ]
+
+        if any(
+            keyword in text
+            for keyword in previous_keywords
+        ):
+            return "get_previous_bill"
+
+        # ------------------------------------------------------
+        # Current bill
+        # ------------------------------------------------------
+
+        current_bill_keywords = [
+            "my bill",
+            "current bill",
+            "current invoice",
+            "my invoice",
+            "bill amount",
+            "how much is my bill",
+            "how much do i owe",
+            "what do i owe",
+            "why is my bill",
+            "why was i charged",
+            "my charges",
+            "my charge",
+        ]
+
+        if any(
+            keyword in text
+            for keyword in current_bill_keywords
+        ):
+            return "get_current_bill"
+
+        # ------------------------------------------------------
+        # No customer-specific tool required
+        # ------------------------------------------------------
+
+        return None
+
+    # ==========================================================
+    # BILLING TOOL EXECUTION
+    # ==========================================================
+
+    @staticmethod
+    def _call_billing_tool(
+        tool_name: str,
+        customer_id: str,
+    ) -> Dict[str, Any]:
+        """
+        Call the exact billing tool function.
+
+        These functions are synchronous in the current
+        billing_tool.py, so we DO NOT use await.
+        """
+
+        if tool_name == "get_current_bill":
+
+            return get_current_bill(
+                customer_id
             )
 
-            return None
+        if tool_name == "get_previous_bill":
 
-        customer_id = context.get(
-            "customer_id"
+            return get_previous_bill(
+                customer_id
+            )
+
+        if tool_name == "get_bill_history":
+
+            return get_bill_history(
+                customer_id
+            )
+
+        if tool_name == "check_duplicate_bill":
+
+            return check_duplicate_bill(
+                customer_id
+            )
+
+        logger.warning(
+            "Unknown billing tool: %s",
+            tool_name,
         )
 
-        if not customer_id:
-
-            logger.warning(
-                "Customer ID not found in context."
-            )
-
-            return None
-
-        try:
-
-            # --------------------------------------------------
-            # Temporary adapter.
-            #
-            # Once the actual billing_tool.py is available,
-            # replace this with its exact method.
-            # --------------------------------------------------
-
-            if hasattr(
-                self.billing_tool,
-                "get_bill",
-            ):
-
-                result = self.billing_tool.get_bill(
-                    customer_id
-                )
-
-                if hasattr(result, "__await__"):
-                    result = await result
-
-                return result
-
-            if hasattr(
-                self.billing_tool,
-                "get_billing_details",
-            ):
-
-                result = self.billing_tool.get_billing_details(
-                    customer_id
-                )
-
-                if hasattr(result, "__await__"):
-                    result = await result
-
-                return result
-
-            if hasattr(
-                self.billing_tool,
-                "get_billing_history",
-            ):
-
-                result = self.billing_tool.get_billing_history(
-                    customer_id
-                )
-
-                if hasattr(result, "__await__"):
-                    result = await result
-
-                return result
-
-            logger.warning(
-                "No supported billing tool method found."
-            )
-
-            return None
-
-        except Exception as exc:
-
-            logger.exception(
-                "Billing tool failed: %s",
-                exc,
-            )
-
-            return None
+        return {
+            "success": False,
+            "message": "Unknown billing tool."
+        }
 
     # ==========================================================
     # GEMINI RESPONSE
@@ -342,14 +373,9 @@ class BillingAgent:
         self,
         query: str,
         rag_context: Any,
-        customer_data: Any,
+        billing_data: Any,
         context: Dict[str, Any],
     ) -> str:
-        """
-        Generate the final customer-facing response.
-
-        Uses the actual generate_text() function from gemini.py.
-        """
 
         language = context.get(
             "language",
@@ -357,7 +383,6 @@ class BillingAgent:
         )
 
         if isinstance(language, dict):
-
             language = language.get(
                 "primary",
                 "en",
@@ -374,23 +399,26 @@ telecom customer-care voice assistant.
 
 Your job is to answer the customer's billing question.
 
-Supported languages include:
+Supported languages:
 English, Tamil, Hindi, Telugu, Kannada and Malayalam.
 
 IMPORTANT RULES:
 
 1. Respond in the same language as the customer.
 2. Use the retrieved billing knowledge when relevant.
-3. Use customer billing information only when it is provided.
-4. Never invent customer billing information.
-5. Never invent a bill amount, charge, invoice or due date.
-6. If customer-specific billing information is unavailable,
-   clearly say that you need to check the customer's account.
-7. Keep the answer concise because this is a voice assistant.
-8. Do not mention RAG, tools, prompts, Gemini or internal agents.
-9. Do not expose unnecessary sensitive customer information.
-10. If the question cannot be answered from the available
-    information, ask a useful clarification question.
+3. Use the customer billing data when it is available.
+4. Never invent billing information.
+5. Never invent bill amounts, charges, dates or invoices.
+6. If the billing tool reports that customer data was not found,
+   clearly explain that the billing information is unavailable.
+7. If the tool reports a duplicate bill, clearly explain the
+   duplicate billing information.
+8. If billing history is provided, summarize it clearly.
+9. Keep the answer concise because this is a voice assistant.
+10. Do not mention RAG, tools, Gemini, prompts or internal agents.
+11. Do not expose unnecessary sensitive customer information.
+12. If the available information is insufficient, ask a useful
+    clarification question.
 
 Preferred language:
 {language}
@@ -401,8 +429,8 @@ Conversation history:
 Retrieved billing knowledge:
 {rag_context}
 
-Customer billing information:
-{customer_data}
+Customer billing data:
+{billing_data}
 
 Customer question:
 {query}
@@ -410,51 +438,25 @@ Customer question:
 Give only the final customer-facing answer.
 """
 
-        response = await generate_text(prompt)
+        try:
 
-        if not response or not response.strip():
-
-            return (
-                "I'm sorry, I couldn't generate a billing "
-                "response right now."
+            response = await generate_text(
+                prompt
             )
 
-        return response.strip()
+            if response and response.strip():
+                return response.strip()
 
-    # ==========================================================
-    # CUSTOMER DATA DECISION
-    # ==========================================================
+        except Exception as exc:
 
-    @staticmethod
-    def _requires_customer_data(
-        query: str,
-    ) -> bool:
-        """
-        Determine whether the question is about
-        the customer's own billing information.
-        """
+            logger.exception(
+                "Gemini billing response generation failed: %s",
+                exc,
+            )
 
-        text = query.lower()
-
-        customer_terms = [
-            "my bill",
-            "my billing",
-            "my invoice",
-            "my charge",
-            "my charges",
-            "my billing history",
-            "my bill history",
-            "my current bill",
-            "my previous bill",
-            "my last bill",
-            "how much do i owe",
-            "what do i owe",
-            "why was i charged",
-        ]
-
-        return any(
-            term in text
-            for term in customer_terms
+        return (
+            "I'm sorry, I couldn't generate a billing "
+            "response right now."
         )
 
     # ==========================================================
@@ -465,9 +467,6 @@ Give only the final customer-facing answer.
     def _error_response(
         message: str,
     ) -> Dict[str, Any]:
-        """
-        Standard Billing Agent error response.
-        """
 
         return {
             "agent": "billing",
@@ -477,7 +476,7 @@ Give only the final customer-facing answer.
 
 
 # =============================================================
-# SHARED AGENT INSTANCE
+# SHARED BILLING AGENT INSTANCE
 # =============================================================
 
 billing_agent = BillingAgent()
