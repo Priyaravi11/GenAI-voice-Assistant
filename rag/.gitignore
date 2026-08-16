@@ -1,0 +1,9 @@
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+chroma_test_bge/
+data/chroma/
+*.sqlite3
+*.bin
