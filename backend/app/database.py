@@ -2,7 +2,12 @@ import os
 from dotenv import load_dotenv
 from pymongo import MongoClient
 
-# Load .env from project root
+
+# ============================================================
+# LOAD ENVIRONMENT VARIABLES
+# ============================================================
+
+# .env is located in the project root
 env_path = os.path.abspath(
     os.path.join(
         os.path.dirname(__file__),
@@ -12,25 +17,60 @@ env_path = os.path.abspath(
 
 load_dotenv(env_path)
 
-# Read MongoDB configuration
+
+# ============================================================
+# MONGODB CONFIGURATION
+# ============================================================
+
 MONGODB_URI = os.getenv("MONGODB_URI")
 MONGODB_DATABASE = os.getenv("MONGODB_DATABASE")
 
-# Create MongoDB client
+
+# ============================================================
+# VALIDATE MONGODB CONFIGURATION
+# ============================================================
+
+if not MONGODB_URI:
+    raise ValueError(
+        "MONGODB_URI is not set in the .env file"
+    )
+
+if not MONGODB_DATABASE:
+    raise ValueError(
+        "MONGODB_DATABASE is not set in the .env file"
+    )
+
+
+# ============================================================
+# CREATE MONGODB CLIENT
+# ============================================================
+
 client = MongoClient(
     MONGODB_URI,
     serverSelectionTimeoutMS=5000
 )
 
-# Select database
+
+# ============================================================
+# SELECT DATABASE
+# ============================================================
+
 db = client[MONGODB_DATABASE]
 
-# Test connection
+
+# ============================================================
+# TEST MONGODB CONNECTION
+# ============================================================
+
 client.admin.command("ping")
 
-print("MongoDB connected successfully!")
-print("Database:", MONGODB_DATABASE)
-# Billing collection
+
+# ============================================================
+# COLLECTIONS
+# ============================================================
+
+# Billing history
 billing_collection = db["telecom_billing_history"]
 
-print("Billing collection connected:", billing_collection.name)
+# Telecom plans
+plans_collection = db["telecom_plans"]
