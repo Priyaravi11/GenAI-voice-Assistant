@@ -2,30 +2,38 @@
 Escalation Handler (Display-Only Version)
 File: backend/app/escalation.py
 
-What this does:
-    1. Checks if the current agent result says escalation is needed
-       (agent sets "escalate": True in the dict it returns from handle(),
-       decided by the RAG -> Tool pipeline finding no answer).
-    2. If yes, returns a message to DISPLAY/SPEAK to the user telling
-       them their request couldn't be satisfied and they're being
-       connected to a senior technical executive.
-    3. No Twilio, no calls, no real connection — message-only response.
+UPDATED to match the REAL agent implementations (billing_agent.py,
+general_agent.py, payment_agent.py, plans_agent.py, technical_agent.py,
+supervisor_agent.py) — none of them set an "escalate" key directly.
+should_escalate() now reads the actual signals each agent produces.
 
-IMPORTANT — deliberately does NOT import gemini.py:
-    Escalation is the fallback path for when things go wrong (no RAG
-    match, no Tool match, or an upstream failure). If this file relied
-    on calling Gemini to generate its message, a Gemini outage would
-    break escalation at exactly the moment it's needed most. Messages
-    are hardcoded per language instead — reliable and instant.
+Per-agent escalation signal:
+    billing / payment  -> "success": False
+                           (only set on exception or invalid/empty query;
+                           there is currently no explicit "nothing found"
+                           signal beyond that in these two agents)
+    plans / technical  -> used_rag=False AND used_tool=False together
+                           (agent found nothing via either path)
+                        -> OR tool_data present but tool_data["success"]
+                           is False (the tool ran but failed/found nothing)
+    general             -> NEVER escalates via this logic. It always has
+                           used_rag=False, used_tool=False by design (it
+                           doesn't use either) — that is normal, not a
+                           failure. Excluding it explicitly prevents every
+                           greeting/thanks message from wrongly escalating.
+    supervisor          -> not applicable. Its output is a ROUTING decision
+                           (which agent to use), not a final answer —
+                           should_escalate() should not be called on it.
 
-    gemini.py's SYSTEM_INSTRUCTION tells Gemini to MENTION escalation
-    conversationally — that does not decide routing. The "escalate"
-    flag set by each agent (from the RAG/Tool pipeline) is the single
-    source of truth for whether escalation actually happens.
+NOTE: tool_data's exact shape (what "success": False looks like from a
+REAL tool call) is confirmed here based on the agents' own code, which
+already checks tool_data.get("success"). Once the actual tools/*.py
+files are shared, this logic may need a small adjustment if their
+real output shape differs from what the agents currently expect —
+flagged as the one open question until tools code arrives.
 
-Languages: matches SUPPORTED_LANGUAGES in gemini.py exactly —
-    English, Tamil, Hindi, Telugu, Kannada, Malayalam.
-    Default: English (used if language is missing or unrecognized).
+No Twilio, no calls, no real connection — this is a message-only
+response for the orchestrator to show/speak back to the user.
 """
 
 import logging
@@ -33,17 +41,52 @@ from typing import Any, Dict
 
 logger = logging.getLogger(__name__)
 
+# Agents where "found nothing via RAG or Tool" is a valid escalation signal.
+# General is deliberately excluded — see module docstring.
+_RAG_TOOL_AGENTS = {"plans", "technical"}
+
+# Agents that report success/failure directly instead of used_rag/used_tool.
+_SUCCESS_FLAG_AGENTS = {"billing", "payment"}
+
 
 class EscalationManager:
 
     def should_escalate(self, agent_result: Dict[str, Any]) -> bool:
         """
-        Simple check: did the agent itself decide to escalate?
-        Every agent's handle() should set "escalate": True/False in
-        its returned dict, based on the RAG -> Tool pipeline finding
-        no answer (see answer_pipeline.py).
+        Reads the REAL signals each agent produces (see module docstring)
+        rather than a uniform "escalate" flag, since none of the agents
+        currently set one.
+
+        Still checks "escalate" first for forward-compatibility, in case
+        an agent is updated later to set it directly — but no current
+        agent does.
         """
-        return bool(agent_result.get("escalate", False))
+        if "escalate" in agent_result:
+            return bool(agent_result["escalate"])
+
+        agent_name = agent_result.get("agent")
+
+        # --- billing / payment: explicit success flag ---
+        if agent_name in _SUCCESS_FLAG_AGENTS:
+            return agent_result.get("success", True) is False
+
+        # --- plans / technical: RAG/Tool signals ---
+        if agent_name in _RAG_TOOL_AGENTS:
+            used_rag = bool(agent_result.get("used_rag"))
+            used_tool = bool(agent_result.get("used_tool"))
+
+            if not used_rag and not used_tool:
+                return True
+
+            tool_data = agent_result.get("tool_data")
+            if isinstance(tool_data, dict) and tool_data.get("success") is False:
+                return True
+
+            return False
+
+        # --- general: never escalates via this check (see docstring) ---
+        # --- supervisor / unknown agent: not applicable, don't escalate ---
+        return False
 
     def handle_escalation(self, reason: str, context: Dict[str, Any]) -> Dict[str, Any]:
         """
