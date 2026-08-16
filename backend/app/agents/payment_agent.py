@@ -4,6 +4,13 @@ from typing import Any, Dict, Optional
 from app.gemini import generate_text
 from app.rag import rag_service
 
+from tools.payment_tool import (
+    get_payment_status,
+    get_payment_history,
+    get_latest_payment,
+    get_payment_issue,
+)
+
 
 logger = logging.getLogger(__name__)
 
@@ -14,12 +21,11 @@ class PaymentAgent:
 
     Handles:
         - Payment status
-        - Failed payments
-        - Successful payments
-        - Transactions
-        - Refunds
-        - Refund status
         - Payment history
+        - Latest payment
+        - Failed payments
+        - Pending payments
+        - Payment issues
 
     Communication:
 
@@ -27,23 +33,12 @@ class PaymentAgent:
           ↓
         Payment Agent
           ↓
-        RAG
-          ↓
-        Payment Tool (when available)
+        RAG + Payment Tool
           ↓
         Gemini
           ↓
-        Final response
+        Final Response
     """
-
-    def __init__(self, payment_tool=None):
-        """
-        payment_tool is injected later by the orchestrator.
-
-        The actual payment_tool.py is not available yet,
-        so the tool connection remains optional.
-        """
-        self.payment_tool = payment_tool
 
     # ==========================================================
     # MAIN ENTRY POINT
@@ -54,16 +49,6 @@ class PaymentAgent:
         query: str,
         context: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
-        """
-        Main method used by the orchestrator.
-
-        Example:
-
-            result = await payment_agent.handle(
-                "Did my payment go through?",
-                context
-            )
-        """
 
         context = context or {}
 
@@ -82,29 +67,45 @@ class PaymentAgent:
         try:
 
             # --------------------------------------------------
-            # 1. Retrieve payment knowledge
+            # 1. Retrieve payment knowledge from RAG
             # --------------------------------------------------
 
-            rag_context = self._retrieve_payment_knowledge(
+            rag_context = self._retrieve_rag(
                 query=query,
                 context=context,
             )
 
             # --------------------------------------------------
-            # 2. Get customer-specific payment information
+            # 2. Decide which payment tool is required
             # --------------------------------------------------
 
             payment_data = None
 
-            if self._requires_customer_data(query):
+            tool_name = self._select_payment_tool(
+                query
+            )
 
-                payment_data = await self._get_customer_payment(
-                    query=query,
-                    context=context,
+            if tool_name:
+
+                customer_id = context.get(
+                    "customer_id"
                 )
 
+                if not customer_id:
+
+                    logger.warning(
+                        "Customer ID not found in context."
+                    )
+
+                else:
+
+                    payment_data = self._call_payment_tool(
+                        tool_name=tool_name,
+                        customer_id=customer_id,
+                    )
+
             # --------------------------------------------------
-            # 3. Generate final answer
+            # 3. Generate final response using Gemini
             # --------------------------------------------------
 
             response = await self._generate_response(
@@ -118,6 +119,7 @@ class PaymentAgent:
                 "agent": "payment",
                 "response": response,
                 "success": True,
+                "tool_used": tool_name,
             }
 
         except Exception as exc:
@@ -128,25 +130,19 @@ class PaymentAgent:
             )
 
             return self._error_response(
-                "I'm sorry, I couldn't process your payment "
-                "request right now."
+                "I'm sorry, I couldn't process your "
+                "payment request right now."
             )
 
     # ==========================================================
     # RAG
     # ==========================================================
 
-    def _retrieve_payment_knowledge(
+    def _retrieve_rag(
         self,
         query: str,
         context: Dict[str, Any],
     ) -> Optional[Dict[str, Any]]:
-        """
-        Retrieve payment knowledge using the existing RAGService.
-
-        Your actual RAG interface is synchronous, therefore
-        we do NOT use await here.
-        """
 
         try:
 
@@ -189,6 +185,7 @@ class PaymentAgent:
                 False,
             )
 
+            # Your RAG search() is synchronous.
             rag_result = rag_service.search(
                 query=query,
                 request_id=request_id,
@@ -211,120 +208,176 @@ class PaymentAgent:
             return None
 
     # ==========================================================
-    # PAYMENT TOOL
+    # PAYMENT TOOL SELECTION
     # ==========================================================
 
-    async def _get_customer_payment(
-        self,
+    @staticmethod
+    def _select_payment_tool(
         query: str,
-        context: Dict[str, Any],
-    ) -> Any:
+    ) -> Optional[str]:
         """
-        Retrieve customer-specific payment information.
+        Decide which payment tool should be called.
 
-        The exact payment tool method will be connected when
-        payment_tool.py is available.
+        Available tools:
+
+            get_payment_status()
+            get_payment_history()
+            get_latest_payment()
+            get_payment_issue()
         """
 
-        if self.payment_tool is None:
+        text = query.lower()
 
-            logger.info(
-                "Payment tool is not available yet."
+        # ------------------------------------------------------
+        # Payment issue
+        # ------------------------------------------------------
+
+        issue_keywords = [
+            "payment failed",
+            "payment fail",
+            "payment didn't go through",
+            "payment did not go through",
+            "payment problem",
+            "payment issue",
+            "payment pending",
+            "pending payment",
+            "failed payment",
+            "why did my payment fail",
+            "why was my payment declined",
+        ]
+
+        if any(
+            keyword in text
+            for keyword in issue_keywords
+        ):
+            return "get_payment_issue"
+
+        # ------------------------------------------------------
+        # Payment history
+        # ------------------------------------------------------
+
+        history_keywords = [
+            "payment history",
+            "payment records",
+            "past payments",
+            "previous payments",
+            "old payments",
+            "show my payments",
+            "all my payments",
+        ]
+
+        if any(
+            keyword in text
+            for keyword in history_keywords
+        ):
+            return "get_payment_history"
+
+        # ------------------------------------------------------
+        # Latest payment
+        # ------------------------------------------------------
+
+        latest_keywords = [
+            "latest payment",
+            "last payment",
+            "recent payment",
+            "most recent payment",
+            "my last payment",
+        ]
+
+        if any(
+            keyword in text
+            for keyword in latest_keywords
+        ):
+            return "get_latest_payment"
+
+        # ------------------------------------------------------
+        # Payment status
+        # ------------------------------------------------------
+
+        status_keywords = [
+            "payment status",
+            "status of my payment",
+            "did my payment go through",
+            "was my payment successful",
+            "is my payment successful",
+            "did i pay",
+            "has my payment gone through",
+            "payment successful",
+        ]
+
+        if any(
+            keyword in text
+            for keyword in status_keywords
+        ):
+            return "get_payment_status"
+
+        # ------------------------------------------------------
+        # Generic customer payment question
+        # ------------------------------------------------------
+
+        generic_payment_keywords = [
+            "my payment",
+            "my transaction",
+            "payment",
+        ]
+
+        if any(
+            keyword in text
+            for keyword in generic_payment_keywords
+        ):
+            return "get_payment_status"
+
+        return None
+
+    # ==========================================================
+    # PAYMENT TOOL EXECUTION
+    # ==========================================================
+
+    @staticmethod
+    def _call_payment_tool(
+        tool_name: str,
+        customer_id: str,
+    ) -> Dict[str, Any]:
+        """
+        Call the exact payment tool function.
+
+        The functions in payment_tool.py are synchronous,
+        so we DO NOT use await.
+        """
+
+        if tool_name == "get_payment_status":
+
+            return get_payment_status(
+                customer_id
             )
 
-            return None
+        if tool_name == "get_payment_history":
 
-        customer_id = context.get(
-            "customer_id"
+            return get_payment_history(
+                customer_id
+            )
+
+        if tool_name == "get_latest_payment":
+
+            return get_latest_payment(
+                customer_id
+            )
+
+        if tool_name == "get_payment_issue":
+
+            return get_payment_issue(
+                customer_id
+            )
+
+        logger.warning(
+            "Unknown payment tool: %s",
+            tool_name,
         )
 
-        if not customer_id:
-
-            logger.warning(
-                "Customer ID not found in context."
-            )
-
-            return None
-
-        try:
-
-            # --------------------------------------------------
-            # Temporary adapter.
-            #
-            # Replace with the exact method from
-            # payment_tool.py when available.
-            # --------------------------------------------------
-
-            if hasattr(
-                self.payment_tool,
-                "get_payment_status",
-            ):
-
-                result = self.payment_tool.get_payment_status(
-                    customer_id
-                )
-
-                if hasattr(result, "__await__"):
-                    result = await result
-
-                return result
-
-            if hasattr(
-                self.payment_tool,
-                "get_payment_details",
-            ):
-
-                result = self.payment_tool.get_payment_details(
-                    customer_id
-                )
-
-                if hasattr(result, "__await__"):
-                    result = await result
-
-                return result
-
-            if hasattr(
-                self.payment_tool,
-                "get_payment_history",
-            ):
-
-                result = self.payment_tool.get_payment_history(
-                    customer_id
-                )
-
-                if hasattr(result, "__await__"):
-                    result = await result
-
-                return result
-
-            if hasattr(
-                self.payment_tool,
-                "get_refund_status",
-            ):
-
-                result = self.payment_tool.get_refund_status(
-                    customer_id
-                )
-
-                if hasattr(result, "__await__"):
-                    result = await result
-
-                return result
-
-            logger.warning(
-                "No supported payment tool method found."
-            )
-
-            return None
-
-        except Exception as exc:
-
-            logger.exception(
-                "Payment tool failed: %s",
-                exc,
-            )
-
-            return None
+        return {
+            "success": False,
+            "message": "Unknown payment tool."
+        }
 
     # ==========================================================
     # GEMINI RESPONSE
@@ -337,11 +390,6 @@ class PaymentAgent:
         payment_data: Any,
         context: Dict[str, Any],
     ) -> str:
-        """
-        Generate the final customer-facing response.
-
-        Uses the actual generate_text() function from gemini.py.
-        """
 
         language = context.get(
             "language",
@@ -366,36 +414,38 @@ telecom customer-care voice assistant.
 
 Your job is to answer the customer's payment-related question.
 
-Supported languages include:
+Supported languages:
 English, Tamil, Hindi, Telugu, Kannada and Malayalam.
 
 You can handle:
 - Payment status
-- Failed payments
-- Successful payments
-- Transactions
 - Payment history
-- Refunds
-- Refund status
+- Latest payment
+- Failed payments
+- Pending payments
+- Payment issues
 
 IMPORTANT RULES:
 
 1. Respond in the same language as the customer.
 2. Use the retrieved payment knowledge when relevant.
-3. Use customer payment information only when it is provided.
+3. Use customer payment data when it is available.
 4. Never invent payment information.
-5. Never claim that a payment succeeded unless the provided
-   payment data says it succeeded.
-6. Never claim that a payment failed unless the provided
-   payment data supports that conclusion.
-7. Never invent a refund status.
-8. If customer-specific payment information is unavailable,
-   clearly say that you need to check the customer's account.
-9. Keep the response concise because this is a voice assistant.
-10. Do not mention RAG, tools, prompts, Gemini or internal agents.
-11. Do not expose unnecessary sensitive payment information.
-12. If the available information is insufficient, ask a
-    useful clarification question.
+5. Never invent transaction IDs, payment amounts or dates.
+6. Never say a payment was successful unless the provided
+   payment data supports it.
+7. Never say a payment failed unless the provided payment
+   data supports it.
+8. If the payment tool reports no record, clearly explain
+   that no payment record was found.
+9. If a payment is pending, clearly explain that it is pending.
+10. If a payment has failed, explain the failure reason when
+    the provided data contains one.
+11. Keep the answer concise because this is a voice assistant.
+12. Do not mention RAG, tools, Gemini, prompts or internal agents.
+13. Do not expose unnecessary sensitive payment information.
+14. If the available information is insufficient, ask a useful
+    clarification question.
 
 Preferred language:
 {language}
@@ -406,7 +456,7 @@ Conversation history:
 Retrieved payment knowledge:
 {rag_context}
 
-Customer payment information:
+Customer payment data:
 {payment_data}
 
 Customer question:
@@ -415,51 +465,25 @@ Customer question:
 Give only the final customer-facing answer.
 """
 
-        response = await generate_text(prompt)
+        try:
 
-        if not response or not response.strip():
-
-            return (
-                "I'm sorry, I couldn't generate a payment "
-                "response right now."
+            response = await generate_text(
+                prompt
             )
 
-        return response.strip()
+            if response and response.strip():
+                return response.strip()
 
-    # ==========================================================
-    # CUSTOMER DATA DECISION
-    # ==========================================================
+        except Exception as exc:
 
-    @staticmethod
-    def _requires_customer_data(
-        query: str,
-    ) -> bool:
-        """
-        Determine whether the request requires
-        customer-specific payment information.
-        """
+            logger.exception(
+                "Gemini payment response generation failed: %s",
+                exc,
+            )
 
-        text = query.lower()
-
-        customer_terms = [
-            "my payment",
-            "my transaction",
-            "my refund",
-            "my payment status",
-            "payment status",
-            "payment history",
-            "refund status",
-            "did my payment go through",
-            "was my payment successful",
-            "why did my payment fail",
-            "payment failed",
-            "payment didn't go through",
-            "payment did not go through",
-        ]
-
-        return any(
-            term in text
-            for term in customer_terms
+        return (
+            "I'm sorry, I couldn't generate a payment "
+            "response right now."
         )
 
     # ==========================================================
@@ -470,9 +494,6 @@ Give only the final customer-facing answer.
     def _error_response(
         message: str,
     ) -> Dict[str, Any]:
-        """
-        Standard Payment Agent error response.
-        """
 
         return {
             "agent": "payment",
@@ -482,7 +503,7 @@ Give only the final customer-facing answer.
 
 
 # =============================================================
-# SHARED AGENT INSTANCE
+# SHARED PAYMENT AGENT INSTANCE
 # =============================================================
 
 payment_agent = PaymentAgent()
