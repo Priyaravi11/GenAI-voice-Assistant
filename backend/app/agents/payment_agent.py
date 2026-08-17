@@ -40,6 +40,18 @@ class PaymentAgent:
         Final Response
     """
 
+    # Canonical set of tools this agent is allowed to invoke.
+    # Used to validate any tool name arriving via context (e.g. a
+    # "required_tool" carried over from a previous turn where we
+    # asked the user for their customer ID), so a stale/corrupted
+    # context value can never reach _call_payment_tool() unchecked.
+    VALID_TOOLS = {
+        "get_payment_status",
+        "get_payment_history",
+        "get_latest_payment",
+        "get_payment_issue",
+    }
+
     # ==========================================================
     # MAIN ENTRY POINT
     # ==========================================================
@@ -81,9 +93,29 @@ class PaymentAgent:
 
             payment_data = None
 
-            tool_name = self._select_payment_tool(
-                query
-            )
+            # If a tool was already identified on a previous turn
+            # (we asked the user for their customer ID and are now
+            # waiting for it), reuse that tool instead of re-running
+            # keyword detection on a query that is likely just the
+            # ID itself and won't match any payment keywords.
+            #
+            # Validated against VALID_TOOLS first: context is
+            # external input (orchestrator/session state). If it's
+            # present but invalid, fall back to fresh keyword
+            # detection instead of letting a bad value silently
+            # flow through to _call_payment_tool().
+            pending_tool = context.get("required_tool")
+
+            if pending_tool in self.VALID_TOOLS:
+                tool_name = pending_tool
+            else:
+                if pending_tool is not None:
+                    logger.warning(
+                        "Ignoring invalid required_tool from "
+                        "context: %r",
+                        pending_tool,
+                    )
+                tool_name = self._select_payment_tool(query)
 
             if tool_name:
 
@@ -107,6 +139,11 @@ class PaymentAgent:
                         "success": True,
                         "tool_used": None,
                         "requires_customer_id": True,
+                        # Tell the caller exactly which tool is
+                        # pending so it can be persisted in
+                        # session/context and replayed once the
+                        # customer ID arrives on a later turn.
+                        "required_tool": tool_name,
                     }
 
                 else:
@@ -132,6 +169,9 @@ class PaymentAgent:
                 "response": response,
                 "success": True,
                 "tool_used": tool_name,
+                # Echoed consistently on both return paths so the
+                # orchestrator has a single stable field to key off.
+                "required_tool": tool_name,
             }
 
         except Exception as exc:
@@ -325,6 +365,14 @@ class PaymentAgent:
 
         # ------------------------------------------------------
         # Generic customer payment question
+        #
+        # NOTE: this is a broad catch-all ("payment" alone matches).
+        # It can over-trigger on unrelated questions that merely
+        # mention the word "payment" (e.g. general policy questions
+        # answerable from RAG alone) and force an unnecessary
+        # customer-ID prompt. Left as-is to preserve existing
+        # behavior; flagged here for a product decision rather than
+        # silently narrowed.
         # ------------------------------------------------------
 
         generic_payment_keywords = [

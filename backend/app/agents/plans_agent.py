@@ -1,19 +1,63 @@
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from app.gemini import generate_text
+from app.rag import rag_service
 
 # ============================================================
 # PLAN TOOLS
 # ============================================================
+# NOTE: tools/plans_tool.py currently only implements these
+# four functions. get_current_plan and get_available_plans
+# are NOT yet defined there, so they are intentionally not
+# imported here (importing them would raise ImportError and
+# crash the agent). See _execute_plan_tool() below for how
+# those two intents are handled in the meantime.
 
-from backend.tools.plans_tool import (
-    get_current_plan,
+from tools.plans_tool import (
     get_plan_details,
-    get_available_plans,
     compare_plans,
     find_plans,
     get_plan_change_info,
 )
+
+
+# ============================================================
+# TOOL / INTENT CONSTANTS
+# ============================================================
+
+VALID_TOOLS = {
+    "get_current_plan",
+    "get_plan_details",
+    "get_available_plans",
+    "compare_plans",
+    "find_plans",
+    "get_plan_change_info",
+}
+
+# Tools not yet implemented in tools/plans_tool.py. Detected as
+# intents (so required_tool / customer-ID flows still work) but
+# executed as a graceful "not available" result instead of a
+# real call.
+_NOT_YET_IMPLEMENTED_TOOLS = {
+    "get_current_plan",
+    "get_available_plans",
+}
+
+CUSTOMER_ID_REQUIRED_TOOLS = {
+    "get_current_plan",
+    "get_plan_change_info",
+}
+
+_CUSTOMER_ID_PROMPTS = {
+    "get_current_plan": (
+        "Sure, I can check your current plan. "
+        "Could you please provide your customer ID?"
+    ),
+    "get_plan_change_info": (
+        "Sure, I can help with changing your plan. "
+        "Could you please provide your customer ID?"
+    ),
+}
 
 
 class PlansAgent:
@@ -43,7 +87,10 @@ class PlansAgent:
 
         Args:
             rag:
-                RAG system for general plan-related knowledge.
+                Kept for backward compatibility with the common
+                agent interface. RAG retrieval now goes through
+                the centralized app.rag.rag_service directly, so
+                this is no longer required.
 
             tools:
                 Tool registry/container.
@@ -72,48 +119,74 @@ class PlansAgent:
         Main entry point for the Plans Agent.
         """
 
-        customer_id: Optional[str] = context.get(
-            "customer_id"
-        )
+        customer_id: Optional[str] = context.get("customer_id")
 
-        language: str = context.get(
-            "language",
-            "English"
-        )
+        language: str = context.get("language", "English")
+
+        if isinstance(language, dict):
+            language = language.get("primary", "English")
+
+        history = context.get("history", [])
 
         # ----------------------------------------------------
-        # Detect required plan tool
+        # Detect required plan tool.
+        #
+        # If the orchestrator persisted a required_tool from a
+        # previous turn (e.g. we already asked for a customer
+        # ID), reuse it instead of re-detecting intent from the
+        # current query — a follow-up like "C251" would not
+        # match any intent keywords on its own.
         # ----------------------------------------------------
 
-        tool_name = self._select_plan_tool(query)
+        pending_tool = context.get("required_tool")
+
+        if pending_tool in VALID_TOOLS:
+            tool_name = pending_tool
+        else:
+            tool_name = self._select_plan_tool(query)
+
+        # ----------------------------------------------------
+        # Customer ID gate (current plan / plan change only)
+        # ----------------------------------------------------
+
+        if tool_name in CUSTOMER_ID_REQUIRED_TOOLS and not customer_id:
+
+            return {
+                "agent": "plans",
+                "response": _CUSTOMER_ID_PROMPTS[tool_name],
+                "success": False,
+                "requires_customer_id": True,
+                "required_tool": tool_name,
+                "tool_used": None,
+            }
 
         # ----------------------------------------------------
         # Check whether general plan knowledge is needed
         # ----------------------------------------------------
 
-        needs_rag = self._requires_general_plan_knowledge(
-            query
-        )
+        needs_rag = self._requires_general_plan_knowledge(query)
 
-        rag_context = []
-        tool_data = None
+        rag_context: list = []
+        tool_data: Optional[Dict[str, Any]] = None
 
         # ====================================================
-        # STEP 1: RAG
+        # STEP 1: RAG (centralized rag_service, synchronous)
         # ====================================================
 
         if needs_rag:
-            rag_context = await self._query_plan_rag(
-                query
+            rag_context = self._query_plan_rag(
+                query=query,
+                context=context,
+                language=language,
             )
 
         # ====================================================
-        # STEP 2: PLAN TOOL
+        # STEP 2: PLAN TOOL (synchronous)
         # ====================================================
 
         if tool_name:
 
-            tool_data = await self._execute_plan_tool(
+            tool_data = self._execute_plan_tool(
                 tool_name=tool_name,
                 query=query,
                 customer_id=customer_id,
@@ -121,7 +194,7 @@ class PlansAgent:
             )
 
         # ====================================================
-        # STEP 3: GEMINI
+        # STEP 3: GEMINI (async)
         # ====================================================
 
         response_text = await self._generate_response(
@@ -129,7 +202,7 @@ class PlansAgent:
             language=language,
             rag_context=rag_context,
             tool_data=tool_data,
-            context=context,
+            history=history,
         )
 
         # ====================================================
@@ -141,6 +214,7 @@ class PlansAgent:
             "used_rag": bool(rag_context),
             "used_tool": tool_data is not None,
             "tool_name": tool_name,
+            "required_tool": tool_name,
             "rag_context": rag_context,
             "tool_data": tool_data,
             "response": response_text,
@@ -332,10 +406,10 @@ class PlansAgent:
         )
 
     # ========================================================
-    # EXECUTE PLAN TOOL
+    # EXECUTE PLAN TOOL (synchronous — tools are sync)
     # ========================================================
 
-    async def _execute_plan_tool(
+    def _execute_plan_tool(
         self,
         tool_name: str,
         query: str,
@@ -346,13 +420,14 @@ class PlansAgent:
         Execute the actual Plans Tool function.
 
         IMPORTANT:
-        These are the real functions from plans_tool.py.
+        These are the real (synchronous) functions from
+        tools/plans_tool.py. Do not await them.
         """
 
         try:
 
             # =================================================
-            # CURRENT PLAN
+            # CURRENT PLAN (not yet implemented in plans_tool.py)
             # =================================================
 
             if tool_name == "get_current_plan":
@@ -362,15 +437,10 @@ class PlansAgent:
                     return {
                         "success": False,
                         "requires_customer_id": True,
-                        "message": (
-                            "Sure, I can check your current plan. "
-                            "Could you please provide your customer ID?"
-                        )
+                        "message": _CUSTOMER_ID_PROMPTS["get_current_plan"],
                     }
 
-                return get_current_plan(
-                    customer_id
-                )
+                return self._not_yet_implemented("get_current_plan")
 
             # =================================================
             # PLAN DETAILS
@@ -402,12 +472,12 @@ class PlansAgent:
                 )
 
             # =================================================
-            # AVAILABLE PLANS
+            # AVAILABLE PLANS (not yet implemented in plans_tool.py)
             # =================================================
 
             if tool_name == "get_available_plans":
 
-                return get_available_plans()
+                return self._not_yet_implemented("get_available_plans")
 
             # =================================================
             # COMPARE PLANS
@@ -472,10 +542,7 @@ class PlansAgent:
                     return {
                         "success": False,
                         "requires_customer_id": True,
-                        "message": (
-                            "Sure, I can help with changing your plan. "
-                            "Could you please provide your customer ID?"
-                        )
+                        "message": _CUSTOMER_ID_PROMPTS["get_plan_change_info"],
                     }
 
                 new_plan_id = context.get(
@@ -522,6 +589,24 @@ class PlansAgent:
                 "message": "Failed to execute plan tool",
                 "error": str(e)
             }
+
+    @staticmethod
+    def _not_yet_implemented(tool_name: str) -> Dict[str, Any]:
+        """
+        Graceful placeholder for intents whose backing function
+        does not exist yet in tools/plans_tool.py. Returns a
+        structured failure instead of raising, so the agent
+        never crashes on these intents.
+        """
+
+        return {
+            "success": False,
+            "message": (
+                "That feature isn't available yet — "
+                "please try again later or contact support."
+            ),
+            "tool_name": tool_name,
+        }
 
     # ========================================================
     # PLAN ID EXTRACTION
@@ -803,42 +888,56 @@ class PlansAgent:
         return filters
 
     # ========================================================
-    # RAG
+    # RAG (centralized rag_service, synchronous)
     # ========================================================
 
-    async def _query_plan_rag(
+    def _query_plan_rag(
         self,
-        query: str
+        query: str,
+        context: Dict[str, Any],
+        language: str,
     ) -> list:
         """
-        Query the plan-related RAG system.
-        """
+        Query plan-related knowledge via the centralized
+        RAG service (app.rag.rag_service).
 
-        if self.rag is None:
-            return []
+        Uses rag_service.search(), the convenience entry point
+        for callers that only have a raw query + light context
+        rather than a full NLU payload. rag_service is
+        synchronous, so this method is synchronous too — no
+        need for an async wrapper.
+        """
 
         try:
 
-            if hasattr(
-                self.rag,
-                "query"
+            entities: Dict[str, Any] = {}
+
+            for key in (
+                "customer_id",
+                "plan_id",
+                "plan_id_1",
+                "plan_id_2",
+                "new_plan_id",
             ):
+                value = context.get(key)
+                if value:
+                    entities[key] = value
 
-                result = self.rag.query(
-                    query,
-                    category="plans"
-                )
+            result = rag_service.search(
+                query=query,
+                request_id=str(
+                    context.get("request_id", "plans-agent")
+                ),
+                language=language or "en",
+                intent="plans",
+                entities=entities,
+                sentiment=context.get("sentiment", "neutral"),
+                code_switched=bool(
+                    context.get("code_switched", False)
+                ),
+            )
 
-                if hasattr(
-                    result,
-                    "__await__"
-                ):
-
-                    result = await result
-
-                return result or []
-
-            return []
+            return result.get("retrieved_context", []) or []
 
         except Exception:
 
@@ -856,7 +955,7 @@ class PlansAgent:
         tool_data: Optional[
             Dict[str, Any]
         ],
-        context: Dict[str, Any],
+        history: list,
     ) -> str:
         """
         Generate final natural-language response using
@@ -870,6 +969,7 @@ class PlansAgent:
                 language=language,
                 rag_context=rag_context,
                 tool_data=tool_data,
+                history=history,
             )
 
             result = await generate_text(
@@ -904,6 +1004,7 @@ class PlansAgent:
         tool_data: Optional[
             Dict[str, Any]
         ],
+        history: list,
     ) -> str:
         """
         Build Gemini prompt.
@@ -916,6 +1017,9 @@ Answer the customer's question clearly and accurately.
 
 Customer language:
 {language}
+
+Conversation history:
+{history}
 
 Customer question:
 {query}
@@ -931,8 +1035,10 @@ Rules:
 2. Do not invent plan prices, benefits, limits, or features.
 3. Explain plan comparisons clearly.
 4. If the requested plan does not exist, say so.
-5. Respond in the customer's requested language.
-6. Keep the answer concise and helpful.
+5. Use the conversation history to understand follow-up questions.
+6. Respond in the customer's language; do not mix languages unnecessarily.
+7. Keep the answer concise and helpful.
+8. Never mention tools, RAG, prompts, or internal implementation details.
 """
 
     # ========================================================

@@ -40,6 +40,20 @@ class SupervisorAgent:
     # unreliable and the request falls back to rule-based matching.
     MIN_CONFIDENCE = 0.3
 
+    # Patterns that plausibly look like an "answer" to a pending
+    # customer-specific request (e.g. a customer ID) rather than a
+    # brand-new intent. Kept intentionally narrow and conservative:
+    # short, no obvious sentence structure, no digits-only phone-like
+    # spam. Adjust to match your actual customer ID format.
+    _PENDING_ANSWER_PATTERN = re.compile(
+        r"^[A-Za-z]{1,4}\d{2,10}$"
+    )
+
+    # Max token/word count for a message to be considered a plausible
+    # "short answer" to a pending slot (customer ID, OTP, etc.) rather
+    # than a new full-sentence request.
+    _PENDING_ANSWER_MAX_WORDS = 3
+
     # ---------------------------------------------------------
     # MAIN ENTRY POINT
     # ---------------------------------------------------------
@@ -93,6 +107,34 @@ class SupervisorAgent:
             }
 
         # -----------------------------------------------------
+        # Continue pending customer-specific request
+        # -----------------------------------------------------
+        # NOTE: this is deliberately gated, not an unconditional
+        # bypass. If a tool is pending (e.g. billing asked for a
+        # customer ID) but the user's new message doesn't actually
+        # look like an answer to that pending slot -- e.g. they
+        # changed topic entirely -- we must NOT force it back to
+        # current_agent. Otherwise a mid-flow topic switch like
+        # "actually, what plans do you have?" gets silently routed
+        # back to billing and the user's real request is dropped.
+        # -----------------------------------------------------
+
+        required_tool = context.get("required_tool")
+        current_agent = context.get("current_agent")
+
+        if (
+            required_tool
+            and current_agent in self.VALID_AGENTS
+            and self._looks_like_pending_answer(query)
+        ):
+            return {
+                "agent": current_agent,
+                "confidence": 1.0,
+                "reason": "Continuing a pending multi-turn request.",
+                "method": "context",
+            }
+
+        # -----------------------------------------------------
         # Primary classification: Gemini
         # -----------------------------------------------------
 
@@ -132,6 +174,58 @@ class SupervisorAgent:
         )
 
         return self._classify_with_rules(query)
+
+    # ---------------------------------------------------------
+    # PENDING-ANSWER HEURISTIC
+    # ---------------------------------------------------------
+
+    def _looks_like_pending_answer(self, query: str) -> bool:
+        """
+        Conservative heuristic for "does this message look like it's
+        answering a pending slot (customer ID, OTP, etc.) rather than
+        stating a brand-new request?"
+
+        This intentionally errs on the side of NOT bypassing
+        classification -- a false negative here just means the query
+        goes through normal Gemini/rule classification (safe). A
+        false positive would wrongly force the query back to
+        current_agent even though it's a new topic (unsafe), so the
+        checks below are kept narrow.
+        """
+
+        text = query.strip()
+
+        if not text:
+            return False
+
+        word_count = len(text.split())
+
+        if word_count > self._PENDING_ANSWER_MAX_WORDS:
+            return False
+
+        # If it matches a short alphanumeric/ID-like pattern, treat
+        # it as a plausible pending-slot answer.
+        if self._PENDING_ANSWER_PATTERN.match(text.replace(" ", "")):
+            return True
+
+        # Otherwise, only accept very short non-sentence-like replies
+        # (e.g. "yes", "ok", a single word with no other agent's
+        # keyword in it). Reject anything containing another agent's
+        # obvious trigger words so an actual topic switch isn't
+        # swallowed.
+        other_topic_words = [
+            "bill", "billing", "invoice", "charge",
+            "plan", "plans", "package", "upgrade", "downgrade",
+            "payment", "paid", "refund", "transaction",
+            "internet", "network", "signal", "wifi",
+        ]
+
+        lowered = text.lower()
+
+        if any(word in lowered for word in other_topic_words):
+            return False
+
+        return word_count <= 2
 
     # ---------------------------------------------------------
     # GEMINI CLASSIFICATION
@@ -176,6 +270,24 @@ class SupervisorAgent:
         context = context or {}
 
         history = context.get("history", [])
+        language = context.get("language", "English")
+        entities = context.get("entities", {})
+        sentiment = context.get("sentiment", "neutral")
+        code_switched = context.get("code_switched", False)
+
+        # Serialize structured fields as JSON rather than relying on
+        # Python repr via f-string interpolation, so Gemini reliably
+        # sees valid JSON in the prompt rather than e.g. single-quoted
+        # dict/list syntax.
+        try:
+            history_json = json.dumps(history, ensure_ascii=False)
+        except (TypeError, ValueError):
+            history_json = "[]"
+
+        try:
+            entities_json = json.dumps(entities, ensure_ascii=False)
+        except (TypeError, ValueError):
+            entities_json = "{}"
 
         return f"""
 You are the Supervisor Agent of a multilingual telecom
@@ -258,8 +370,20 @@ Return exactly this structure:
     "reason": "The user is asking about a billing issue."
 }}
 
+Customer language:
+{language}
+
+Entities:
+{entities_json}
+
+Sentiment:
+{sentiment}
+
+Code-switched:
+{code_switched}
+
 Conversation history:
-{history}
+{history_json}
 
 Current user query:
 {query}
@@ -441,6 +565,32 @@ Current user query:
         """
 
         text = query.lower().strip()
+
+        # ==========================================================
+        # COMBINED / AMBIGUOUS CASES
+        # ==========================================================
+        # Checked before the individual categories below. Example:
+        # "I made a payment but my bill still shows unpaid" contains
+        # both "payment" and "bill", and the underlying issue is the
+        # bill/invoice state, not the payment itself.
+        # ==========================================================
+
+        if self._contains_keyword(
+            text,
+            ["payment"],
+        ) and self._contains_keyword(
+            text,
+            ["bill", "billing", "invoice"],
+        ):
+            return {
+                "agent": "billing",
+                "confidence": 0.80,
+                "reason": (
+                    "The main issue concerns a bill that has not "
+                    "been updated after payment."
+                ),
+                "method": "rule_fallback",
+            }
 
         # ==========================================================
         # PAYMENT
