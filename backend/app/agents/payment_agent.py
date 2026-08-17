@@ -1,8 +1,8 @@
 import logging
 from typing import Any, Dict, Optional
 
-from app.gemini import generate_text
-from app.rag import rag_service
+from backend.app.gemini import generate_text
+from backend.app.rag import rag_service
 
 from tools.payment_tool import (
     get_payment_status,

@@ -64,13 +64,18 @@ db = client[MONGODB_DATABASE]
 
 try:
     client.admin.command("ping")
-    print("MongoDB connected successfully!")
-    print(f"Database: {MONGODB_DATABASE}")
+    print("✓ MongoDB connected successfully!")
+    print(f"  Database: {MONGODB_DATABASE}")
+    DB_CONNECTED = True
 
 except Exception as e:
-    raise ConnectionError(
-        f"MongoDB connection failed: {e}"
+    import logging
+    logger = logging.getLogger(__name__)
+    logger.warning(
+        f"MongoDB connection warning: {e}. "
+        "Some features will not work until MongoDB is available."
     )
+    DB_CONNECTED = False
 
 
 # ============================================================

@@ -5,10 +5,8 @@ from typing import Any, Dict, Optional
 # PLAN TOOLS
 # ============================================================
 
-from backend.tools.plans_tool import (
-    get_current_plan,
+from tools.plans_tool import (
     get_plan_details,
-    get_available_plans,
     compare_plans,
     find_plans,
     get_plan_change_info,

@@ -3,7 +3,7 @@ import logging
 import re
 from typing import Any, Dict, Optional
 
-from app.gemini import generate_text
+from backend.app.gemini import generate_text
 
 
 logger = logging.getLogger(__name__)

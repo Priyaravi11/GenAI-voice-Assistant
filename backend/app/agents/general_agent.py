@@ -1,6 +1,6 @@
 from typing import Any, Dict
 
-from app.gemini import generate_text
+from backend.app.gemini import generate_text
 
 
 class GeneralAgent:

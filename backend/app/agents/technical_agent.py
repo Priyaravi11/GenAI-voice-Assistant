@@ -5,7 +5,7 @@ from typing import Any, Dict, Optional
 # NETWORK TOOLS
 # ============================================================
 
-from backend.tools.network_tool import (
+from tools.network_tool import (
     get_network_status,
     get_network_issue,
     get_resolution_time,

@@ -145,17 +145,73 @@ async def generate_text(prompt: str) -> str:
     - fallback responses
     - RAG response generation
     - debugging
+    
+    Args:
+        prompt: The prompt text to send to Gemini
+        
+    Returns:
+        The generated response text
+        
+    Raises:
+        ValueError: If prompt is empty
+        Exception: If Gemini API call fails
     """
 
     if not prompt or not prompt.strip():
         raise ValueError("Prompt cannot be empty")
 
-    response = await client.aio.models.generate_content(
-        model="gemini-3.6-flash",
-        contents=prompt,
-    )
+    if len(prompt) > 100000:
+        raise ValueError("Prompt exceeds maximum length (100k chars)")
 
-    return response.text or ""
+    try:
+        response = await client.aio.models.generate_content(
+            model="gemini-2.0-flash",
+            contents=prompt,
+        )
+
+        if not response.text:
+            raise ValueError("Gemini returned empty response")
+
+        return response.text
+
+    except Exception as e:
+        raise RuntimeError(f"Gemini generation failed: {str(e)}")
+
+
+# ============================================================
+# Streaming Text Generation
+# ============================================================
+
+async def generate_text_streaming(prompt: str):
+    """
+    Stream response text from Gemini for real-time output.
+
+    Useful for:
+    - Real-time transcription feedback
+    - Progressive response display
+    - Lower latency perception
+    
+    Args:
+        prompt: The prompt text
+        
+    Yields:
+        Text chunks as they are generated
+    """
+
+    if not prompt or not prompt.strip():
+        raise ValueError("Prompt cannot be empty")
+
+    try:
+        async with await client.aio.models.generate_content_stream(
+            model="gemini-2.0-flash",
+            contents=prompt,
+        ) as stream:
+            async for chunk in stream:
+                if chunk.text:
+                    yield chunk.text
+
+    except Exception as e:
+        raise RuntimeError(f"Gemini streaming failed: {str(e)}")
 
 
 # ============================================================

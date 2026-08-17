@@ -11,3 +11,5 @@ pymongo
 numpy
 pytest
 pytest-asyncio
+google-genai
+chromadb
