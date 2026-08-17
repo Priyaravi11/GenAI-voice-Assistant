@@ -5,14 +5,18 @@ from app.gemini import generate_text
 # ============================================================
 # NETWORK TOOLS
 # ============================================================
+# Per backend/app/tools.py's own docstring: "Agents should call
+# tools through this file instead of directly depending on
+# individual tool modules." So we go through the central
+# registry's execute_tool_async() rather than importing
+# get_network_status/get_network_issue/etc. from
+# tools.network_tool directly. execute_tool_async also already
+# handles the sync/async distinction internally (via
+# inspect.isawaitable), so we don't need to special-case that
+# here either.
+# ============================================================
 
-from backend.tools.network_tool import (
-    get_network_status,
-    get_network_issue,
-    get_resolution_time,
-    check_area_service,
-    get_network_details,
-)
+from backend.app.tools import execute_tool_async
 
 
 class TechnicalAgent:
@@ -31,6 +35,16 @@ class TechnicalAgent:
     FastAPI routes will be integrated later by the team.
     """
 
+    # Known network tool names. Used to validate a "required_tool"
+    # value coming back from context before trusting/reusing it.
+    VALID_TOOLS = {
+        "get_network_status",
+        "get_network_issue",
+        "get_resolution_time",
+        "check_area_service",
+        "get_network_details",
+    }
+
     def __init__(self, rag: Any, tools: Any, gemini: Any = None):
         """
         Common agent interface.
@@ -41,8 +55,9 @@ class TechnicalAgent:
 
             tools:
                 Tool registry/container.
-                The actual network functions are imported directly
-                from network_tool.py.
+                Network functions are invoked via
+                backend.app.tools.execute_tool_async, not
+                imported directly.
 
             gemini:
                 Kept for backward compatibility with the common
@@ -80,10 +95,20 @@ class TechnicalAgent:
 
         customer_id: Optional[str] = context.get("customer_id")
 
-        language: str = context.get(
+        language = context.get(
             "language",
-            "English"
+            "English",
         )
+
+        # If language is passed as a structured object (e.g.
+        # {"primary": "Tamil", "confidence": 0.9}), extract the
+        # primary language rather than stringifying the whole dict
+        # into the prompt.
+        if isinstance(language, dict):
+            language = language.get(
+                "primary",
+                "English",
+            )
 
         # ----------------------------------------------------
         # Detect area from context
@@ -108,10 +133,31 @@ class TechnicalAgent:
         )
 
         # ----------------------------------------------------
-        # Decide which network tool is required
+        # Decide which network tool is required.
+        #
+        # A freshly-detected tool from the CURRENT query always
+        # wins. We only fall back to a pending "required_tool"
+        # from context (set on a previous turn, e.g. when we asked
+        # "what's your area?") when the current message doesn't
+        # match any tool intent on its own -- i.e. it's plausibly
+        # just the area answer ("Chennai"), not a new request.
+        #
+        # This avoids the opposite bug: if the user answers the
+        # area question with a message that itself states a new,
+        # different intent ("actually, when will it be resolved?"),
+        # that new intent should not be silently overridden by a
+        # stale pending tool.
         # ----------------------------------------------------
 
-        tool_name = self._select_network_tool(query)
+        selected_tool = self._select_network_tool(query)
+        pending_tool = context.get("required_tool")
+
+        if selected_tool:
+            tool_name = selected_tool
+        elif pending_tool in self.VALID_TOOLS:
+            tool_name = pending_tool
+        else:
+            tool_name = None
 
         rag_context = []
         tool_data = None
@@ -143,6 +189,7 @@ class TechnicalAgent:
                     "used_rag": bool(rag_context),
                     "used_tool": False,
                     "tool_name": tool_name,
+                    "required_tool": tool_name,
                     "rag_context": rag_context,
                     "tool_data": None,
                     "requires_area": True,
@@ -176,6 +223,7 @@ class TechnicalAgent:
             "used_rag": bool(rag_context),
             "used_tool": tool_data is not None,
             "tool_name": tool_name,
+            "required_tool": tool_name,
             "rag_context": rag_context,
             "tool_data": tool_data,
             "response": response_text,
@@ -411,65 +459,23 @@ class TechnicalAgent:
         query: str,
     ) -> Dict[str, Any]:
         """
-        Execute one of the actual Network Tool functions.
+        Execute a network tool through the central tool registry
+        (backend/app/tools.py: execute_tool_async), rather than
+        importing/dispatching individual network_tool functions
+        directly.
 
-        IMPORTANT:
-        These are the real functions from network_tool.py.
+        NOTE: network_tool.py's functions take only `area` -- no
+        `customer_id` -- so it isn't forwarded to the tool call.
+        customer_id is still accepted as a param here in case a
+        future tool in this agent needs it.
         """
 
         try:
 
-            # ------------------------------------------------
-            # Network Status
-            # ------------------------------------------------
-
-            if tool_name == "get_network_status":
-
-                return get_network_status(area)
-
-            # ------------------------------------------------
-            # Network Issue
-            # ------------------------------------------------
-
-            if tool_name == "get_network_issue":
-
-                return get_network_issue(area)
-
-            # ------------------------------------------------
-            # Resolution Time
-            # ------------------------------------------------
-
-            if tool_name == "get_resolution_time":
-
-                return get_resolution_time(area)
-
-            # ------------------------------------------------
-            # Area Service
-            # ------------------------------------------------
-
-            if tool_name == "check_area_service":
-
-                return check_area_service(area)
-
-            # ------------------------------------------------
-            # Network Details
-            # ------------------------------------------------
-
-            if tool_name == "get_network_details":
-
-                return get_network_details(area)
-
-            # ------------------------------------------------
-            # Unknown tool
-            # ------------------------------------------------
-
-            return {
-                "success": False,
-                "area": area,
-                "message": (
-                    f"Unknown network tool: {tool_name}"
-                )
-            }
+            return await execute_tool_async(
+                tool_name,
+                area=area,
+            )
 
         except Exception as e:
 
@@ -495,6 +501,12 @@ class TechnicalAgent:
 
         This supports different possible RAG interfaces
         without hardcoding a fake result.
+
+        NOTE: left on the self.rag.query(...) interface. Don't
+        switch this to a centralized rag_service until you've
+        confirmed its actual method signature in
+        backend/app/rag.py -- guessing here risks a silent
+        integration break.
         """
 
         if self.rag is None:
@@ -545,11 +557,14 @@ class TechnicalAgent:
 
         try:
 
+            history = context.get("history", [])
+
             prompt = self._build_prompt(
                 query=query,
                 language=language,
                 rag_context=rag_context,
                 tool_data=tool_data,
+                history=history,
             )
 
             result = await generate_text(prompt)
@@ -580,6 +595,7 @@ class TechnicalAgent:
         language: str,
         rag_context: list,
         tool_data: Optional[Dict[str, Any]],
+        history: Any,
     ) -> str:
         """
         Build the prompt passed to Gemini.
@@ -592,6 +608,9 @@ Answer the customer's question clearly and accurately.
 
 Customer language:
 {language}
+
+Conversation history:
+{history}
 
 Customer question:
 {query}
@@ -606,9 +625,11 @@ Rules:
 1. Do not invent network information.
 2. Use the live network tool result when available.
 3. Use RAG information for general technical explanations.
-4. If information is unavailable, clearly say so.
-5. Respond in the customer's requested language.
-6. Keep the answer helpful and concise.
+4. Use conversation history to understand context (e.g. an area
+   mentioned in a follow-up turn answering a previous question).
+5. If information is unavailable, clearly say so.
+6. Respond in the customer's requested language.
+7. Keep the answer helpful and concise.
 """
 
     # ========================================================
