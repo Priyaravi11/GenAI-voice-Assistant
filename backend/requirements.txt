@@ -13,3 +13,5 @@ pytest
 pytest-asyncio
 google-genai
 chromadb
+sentence-transformers
+python-multipart

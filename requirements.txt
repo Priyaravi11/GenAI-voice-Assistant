@@ -11,3 +11,6 @@ pymongo
 numpy
 pytest
 pytest-asyncio
+sentence-transformers
+chromadb
+google-api-core
