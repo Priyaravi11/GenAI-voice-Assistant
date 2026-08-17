@@ -1,5 +1,6 @@
 from typing import Any, Dict, Optional
 
+from app.gemini import generate_text
 
 # ============================================================
 # NETWORK TOOLS
@@ -30,7 +31,7 @@ class TechnicalAgent:
     FastAPI routes will be integrated later by the team.
     """
 
-    def __init__(self, rag: Any, tools: Any, gemini: Any):
+    def __init__(self, rag: Any, tools: Any, gemini: Any = None):
         """
         Common agent interface.
 
@@ -44,8 +45,10 @@ class TechnicalAgent:
                 from network_tool.py.
 
             gemini:
-                Gemini/LLM interface used for generating the
-                final natural-language response.
+                Kept for backward compatibility with the common
+                agent interface. Response generation now goes
+                through app.gemini.generate_text directly, so
+                this is no longer required.
         """
 
         self.rag = rag
@@ -131,22 +134,26 @@ class TechnicalAgent:
 
             if not area:
 
-                tool_data = {
-                    "success": False,
-                    "message": (
-                        "Area is required to retrieve "
-                        "network information."
-                    )
+                return {
+                    "agent": "technical",
+                    "response": (
+                        "Sure, I can check the network information. "
+                        "Could you please provide your area or location?"
+                    ),
+                    "used_rag": bool(rag_context),
+                    "used_tool": False,
+                    "tool_name": tool_name,
+                    "rag_context": rag_context,
+                    "tool_data": None,
+                    "requires_area": True,
                 }
 
-            else:
-
-                tool_data = await self._execute_network_tool(
-                    tool_name=tool_name,
-                    area=area,
-                    customer_id=customer_id,
-                    query=query,
-                )
+            tool_data = await self._execute_network_tool(
+                tool_name=tool_name,
+                area=area,
+                customer_id=customer_id,
+                query=query,
+            )
 
         # ====================================================
         # STEP 3: GENERATE RESPONSE
@@ -530,44 +537,28 @@ class TechnicalAgent:
         context: Dict[str, Any],
     ) -> str:
         """
-        Generate the final response.
+        Generate the final response using app.gemini.generate_text.
 
-        If Gemini is not connected yet, a clean fallback
-        response is returned.
-
-        This avoids mock responses.
+        If generation fails, a clean fallback response is
+        returned. This avoids mock responses.
         """
 
-        # ----------------------------------------------------
-        # If Gemini is available
-        # ----------------------------------------------------
+        try:
 
-        if self.gemini is not None:
+            prompt = self._build_prompt(
+                query=query,
+                language=language,
+                rag_context=rag_context,
+                tool_data=tool_data,
+            )
 
-            try:
+            result = await generate_text(prompt)
 
-                prompt = self._build_prompt(
-                    query=query,
-                    language=language,
-                    rag_context=rag_context,
-                    tool_data=tool_data,
-                )
+            if result:
+                return str(result)
 
-                if hasattr(self.gemini, "generate"):
-
-                    result = self.gemini.generate(
-                        prompt=prompt,
-                        context=context,
-                    )
-
-                    if hasattr(result, "__await__"):
-                        result = await result
-
-                    if result:
-                        return str(result)
-
-            except Exception:
-                pass
+        except Exception:
+            pass
 
         # ----------------------------------------------------
         # Fallback response

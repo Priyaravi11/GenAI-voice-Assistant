@@ -17,7 +17,8 @@ class SupervisorAgent:
     1. Understand the user's request.
     2. Classify the request into the correct specialized agent.
     3. Use Gemini as the primary classifier.
-    4. Fall back to rule-based classification if Gemini fails.
+    4. Fall back to rule-based classification if Gemini fails or
+       returns low confidence (below MIN_CONFIDENCE).
 
     Available agents:
         - billing
@@ -34,6 +35,10 @@ class SupervisorAgent:
         "technical",
         "general",
     }
+
+    # Gemini classifications below this confidence are treated as
+    # unreliable and the request falls back to rule-based matching.
+    MIN_CONFIDENCE = 0.3
 
     # ---------------------------------------------------------
     # MAIN ENTRY POINT
@@ -99,7 +104,17 @@ class SupervisorAgent:
             )
 
             if result and result["agent"] in self.VALID_AGENTS:
-                return result
+
+                if result.get("confidence", 1.0) < self.MIN_CONFIDENCE:
+
+                    logger.warning(
+                        "Gemini confidence too low (%.2f), "
+                        "falling back to rule-based classification.",
+                        result.get("confidence", 0.0),
+                    )
+
+                else:
+                    return result
 
         except Exception as exc:
 
@@ -308,16 +323,23 @@ Current user query:
             except json.JSONDecodeError:
 
                 # ---------------------------------------------
-                # Second attempt: extract JSON object
+                # Second attempt: extract the first structurally
+                # valid JSON object from the text.
+                #
+                # NOTE: a naive greedy regex like r"\{.*\}" would
+                # span from the FIRST "{" to the LAST "}" in the
+                # whole response. If Gemini echoes an example or
+                # adds trailing notes containing their own braces,
+                # that regex over-matches and produces invalid
+                # JSON even when a valid object was extractable.
+                # json.JSONDecoder().raw_decode avoids this by
+                # parsing from a starting "{" and stopping as soon
+                # as it finds one complete, valid object.
                 # ---------------------------------------------
 
-                match = re.search(
-                    r"\{.*\}",
-                    text,
-                    flags=re.DOTALL,
-                )
+                start = text.find("{")
 
-                if not match:
+                if start == -1:
 
                     logger.warning(
                         "Unable to parse Gemini response: %s",
@@ -326,11 +348,11 @@ Current user query:
 
                     return None
 
+                decoder = json.JSONDecoder()
+
                 try:
 
-                    data = json.loads(
-                        match.group(0)
-                    )
+                    data, _ = decoder.raw_decode(text, start)
 
                 except json.JSONDecodeError:
 
@@ -418,151 +440,163 @@ Current user query:
         Rules are used only when Gemini fails.
         """
 
-        text = query.lower()
+        text = query.lower().strip()
 
-        # -----------------------------------------------------
-        # Payment
-        # -----------------------------------------------------
+        # ==========================================================
+        # PAYMENT
+        # ==========================================================
+        # NOTE: intentionally do NOT add a generic "pay" keyword here.
+        # "pay" is a substring of many unrelated phrases (e.g. "pay for
+        # my bill", "payslip") and, unlike "payment"/"paid", it is too
+        # short and too common to be a reliable signal even with
+        # word-boundary matching. Keep this list to "payment" and
+        # "paid" only.
+        # ==========================================================
 
         payment_keywords = [
-            "payment",
-            "paid",
-            "pay",
-            "refund",
-            "transaction",
             "payment failed",
             "failed payment",
             "payment status",
+            "payment history",
+            "latest payment",
+            "last payment",
+            "payment issue",
+            "payment problem",
+            "refund",
+            "transaction",
+            "payment",
+            "paid",
         ]
 
-        # -----------------------------------------------------
-        # Billing
-        # -----------------------------------------------------
+        # ==========================================================
+        # BILLING
+        # ==========================================================
 
         billing_keywords = [
-            "bill",
+            "current bill",
+            "previous bill",
+            "last bill",
+            "bill history",
+            "billing history",
             "billing",
             "invoice",
+            "bill amount",
+            "bill",
             "charge",
             "charged",
             "charges",
             "due date",
             "late fee",
-            "billing history",
+            "duplicate bill",
+            "double bill",
         ]
 
-        # -----------------------------------------------------
-        # Plans
-        # -----------------------------------------------------
+        # ==========================================================
+        # PLANS
+        # ==========================================================
 
         plans_keywords = [
-            "plan",
-            "plans",
-            "subscription",
-            "upgrade",
-            "downgrade",
+            "available plan",
+            "available plans",
+            "plan pricing",
+            "plan comparison",
+            "compare plans",
+            "upgrade plan",
+            "downgrade plan",
             "data plan",
-            "pricing",
+            "subscription",
+            "plans",
+            "plan",
             "package",
         ]
 
-        # -----------------------------------------------------
-        # Technical
-        # -----------------------------------------------------
+        # ==========================================================
+        # TECHNICAL
+        # ==========================================================
 
         technical_keywords = [
+            "internet not working",
+            "internet problem",
+            "network problem",
+            "network issue",
+            "no signal",
+            "weak signal",
+            "slow internet",
+            "mobile data not working",
+            "4g problem",
+            "5g problem",
+            "4g not working",
+            "5g not working",
+            "network outage",
+            "connectivity problem",
+            "connection problem",
             "internet",
             "network",
             "signal",
-            "5g",
-            "4g",
             "wifi",
-            "connectivity",
-            "connection",
-            "outage",
-            "slow internet",
-            "not working",
         ]
 
-        # -----------------------------------------------------
-        # Check payment first
-        # -----------------------------------------------------
+        # ==========================================================
+        # ORDER
+        # ==========================================================
+        # Check the most specific categories first.
+        # ==========================================================
 
         if self._contains_keyword(
             text,
             payment_keywords,
         ):
-
             return {
                 "agent": "payment",
                 "confidence": 0.70,
                 "reason": (
-                    "Matched payment-related "
-                    "keywords."
+                    "Matched payment-related keywords."
                 ),
                 "method": "rule_fallback",
             }
-
-        # -----------------------------------------------------
-        # Billing
-        # -----------------------------------------------------
 
         if self._contains_keyword(
             text,
             billing_keywords,
         ):
-
             return {
                 "agent": "billing",
                 "confidence": 0.70,
                 "reason": (
-                    "Matched billing-related "
-                    "keywords."
+                    "Matched billing-related keywords."
                 ),
                 "method": "rule_fallback",
             }
-
-        # -----------------------------------------------------
-        # Plans
-        # -----------------------------------------------------
 
         if self._contains_keyword(
             text,
             plans_keywords,
         ):
-
             return {
                 "agent": "plans",
                 "confidence": 0.70,
                 "reason": (
-                    "Matched plan-related "
-                    "keywords."
+                    "Matched plan-related keywords."
                 ),
                 "method": "rule_fallback",
             }
-
-        # -----------------------------------------------------
-        # Technical
-        # -----------------------------------------------------
 
         if self._contains_keyword(
             text,
             technical_keywords,
         ):
-
             return {
                 "agent": "technical",
                 "confidence": 0.70,
                 "reason": (
-                    "Matched technical/network "
-                    "keywords."
+                    "Matched technical/network keywords."
                 ),
                 "method": "rule_fallback",
             }
 
-        # -----------------------------------------------------
-        # Default
-        # -----------------------------------------------------
+        # ==========================================================
+        # GENERAL
+        # ==========================================================
 
         return {
             "agent": "general",
@@ -583,13 +617,21 @@ Current user query:
         keywords: list,
     ) -> bool:
         """
-        Check whether a keyword appears in the query.
+        Check whether a keyword appears in the query as a whole
+        word/phrase, using Unicode-aware word boundaries.
+
+        This avoids false positives such as "plan" matching inside
+        "implantation" or "airplane".
         """
 
-        return any(
-            keyword in text
-            for keyword in keywords
-        )
+        for keyword in keywords:
+
+            pattern = r"\b" + re.escape(keyword.lower()) + r"\b"
+
+            if re.search(pattern, text):
+                return True
+
+        return False
 
 
 # =============================================================

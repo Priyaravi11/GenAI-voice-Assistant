@@ -1,5 +1,6 @@
 from typing import Any, Dict, Optional
 
+from app.gemini import generate_text
 
 # ============================================================
 # PLAN TOOLS
@@ -35,7 +36,7 @@ class PlansAgent:
         self,
         rag: Any,
         tools: Any,
-        gemini: Any
+        gemini: Any = None
     ):
         """
         Common agent interface.
@@ -48,7 +49,10 @@ class PlansAgent:
                 Tool registry/container.
 
             gemini:
-                Gemini/LLM interface for final response generation.
+                Kept for backward compatibility with the common
+                agent interface. Response generation now goes
+                through app.gemini.generate_text directly, so
+                this is no longer required.
         """
 
         self.rag = rag
@@ -357,9 +361,10 @@ class PlansAgent:
 
                     return {
                         "success": False,
+                        "requires_customer_id": True,
                         "message": (
-                            "Customer ID is required "
-                            "to retrieve the current plan."
+                            "Sure, I can check your current plan. "
+                            "Could you please provide your customer ID?"
                         )
                     }
 
@@ -466,9 +471,10 @@ class PlansAgent:
 
                     return {
                         "success": False,
+                        "requires_customer_id": True,
                         "message": (
-                            "Customer ID is required "
-                            "to check plan change information."
+                            "Sure, I can help with changing your plan. "
+                            "Could you please provide your customer ID?"
                         )
                     }
 
@@ -853,43 +859,29 @@ class PlansAgent:
         context: Dict[str, Any],
     ) -> str:
         """
-        Generate final natural-language response.
+        Generate final natural-language response using
+        app.gemini.generate_text.
         """
 
-        if self.gemini is not None:
+        try:
 
-            try:
+            prompt = self._build_prompt(
+                query=query,
+                language=language,
+                rag_context=rag_context,
+                tool_data=tool_data,
+            )
 
-                prompt = self._build_prompt(
-                    query=query,
-                    language=language,
-                    rag_context=rag_context,
-                    tool_data=tool_data,
-                )
+            result = await generate_text(
+                prompt
+            )
 
-                if hasattr(
-                    self.gemini,
-                    "generate"
-                ):
+            if result:
 
-                    result = self.gemini.generate(
-                        prompt=prompt,
-                        context=context,
-                    )
+                return str(result)
 
-                    if hasattr(
-                        result,
-                        "__await__"
-                    ):
-
-                        result = await result
-
-                    if result:
-
-                        return str(result)
-
-            except Exception:
-                pass
+        except Exception:
+            pass
 
         # ----------------------------------------------------
         # Fallback

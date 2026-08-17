@@ -97,6 +97,18 @@ class PaymentAgent:
                         "Customer ID not found in context."
                     )
 
+                    return {
+                        "agent": "payment",
+                        "response": (
+                            "Sure, I can check your payment "
+                            "information. Could you please "
+                            "provide your customer ID?"
+                        ),
+                        "success": True,
+                        "tool_used": None,
+                        "requires_customer_id": True,
+                    }
+
                 else:
 
                     payment_data = self._call_payment_tool(

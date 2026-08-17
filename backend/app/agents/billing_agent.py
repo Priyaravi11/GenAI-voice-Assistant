@@ -94,6 +94,18 @@ class BillingAgent:
                         "Customer ID not found in context."
                     )
 
+                    return {
+                        "agent": "billing",
+                        "response": (
+                            "Sure, I can check your billing "
+                            "information. Could you please "
+                            "provide your customer ID?"
+                        ),
+                        "success": True,
+                        "tool_used": None,
+                        "requires_customer_id": True,
+                    }
+
                 else:
 
                     billing_data = self._call_billing_tool(
