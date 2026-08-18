@@ -13,12 +13,16 @@ export interface AudioWebSocketState {
   audioReady: boolean;
   error: string | null;
   lastTranscript: string | null;
+  status: string | null;
 }
 
 export interface AudioWebSocketHandlers {
   onAudioResponse?: (data: string, mimeType: string) => void;
   onTranscript?: (text: string) => void;
+  onAssistantResponse?: (message: Record<string, any>) => void;
   onError?: (error: string) => void;
+  onEscalation?: (message: Record<string, any>) => void;
+  onStatus?: (message: Record<string, any>) => void;
   onReady?: () => void;
   onStreamClosed?: () => void;
 }
@@ -32,10 +36,16 @@ export function useAudioWebSocket(
     audioReady: false,
     error: null,
     lastTranscript: null,
+    status: null,
   });
 
   const socketRef = useRef<WebSocket | null>(null);
+  const handlersRef = useRef(handlers);
   const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    handlersRef.current = handlers;
+  }, [handlers]);
 
   // Connect to WebSocket
   const connect = useCallback(() => {
@@ -79,10 +89,11 @@ export function useAudioWebSocket(
           audioReady: false,
         }));
 
-        // Auto-reconnect after delay
-        reconnectTimeoutRef.current = setTimeout(() => {
-          connect();
-        }, 3000);
+        if (socketRef.current === socket) {
+          reconnectTimeoutRef.current = setTimeout(() => {
+            connect();
+          }, 3000);
+        }
       });
     } catch (error) {
       setState((prev) => ({
@@ -103,26 +114,43 @@ export function useAudioWebSocket(
             ...prev,
             audioReady: true,
           }));
-          handlers.onReady?.();
+          handlersRef.current.onReady?.();
           break;
 
         case "audio_response":
-          handlers.onAudioResponse?.(
+          handlersRef.current.onAudioResponse?.(
             data.data,
             data.mime_type || "audio/wav"
           );
           break;
 
         case "audio_transcript":
+        case "transcript":
           setState((prev) => ({
             ...prev,
             lastTranscript: data.content,
           }));
-          handlers.onTranscript?.(data.content);
+          handlersRef.current.onTranscript?.(data.content);
+          break;
+
+        case "assistant_response":
+          handlersRef.current.onAssistantResponse?.(data);
+          break;
+
+        case "escalation_notice":
+          handlersRef.current.onEscalation?.(data);
+          break;
+
+        case "status":
+          setState((prev) => ({
+            ...prev,
+            status: data.status || data.message || null,
+          }));
+          handlersRef.current.onStatus?.(data);
           break;
 
         case "audio_stream_closed":
-          handlers.onStreamClosed?.();
+          handlersRef.current.onStreamClosed?.();
           break;
 
         case "error":
@@ -130,14 +158,14 @@ export function useAudioWebSocket(
             ...prev,
             error: data.error,
           }));
-          handlers.onError?.(data.error);
+          handlersRef.current.onError?.(data.error);
           break;
 
         default:
           break;
       }
     },
-    [handlers]
+    []
   );
 
   // Send audio chunk
@@ -170,7 +198,7 @@ export function useAudioWebSocket(
 
   // Start audio stream
   const startAudioStream = useCallback(
-    (language = "en") => {
+    (language = "en", customerId?: string) => {
       if (!socketRef.current || socketRef.current.readyState !== WebSocket.OPEN) {
         console.error("WebSocket not connected");
         return;
@@ -181,6 +209,7 @@ export function useAudioWebSocket(
           type: "audio_start",
           session_id: sessionId,
           language: language,
+          customer_id: customerId,
         })
       );
     },
@@ -202,11 +231,51 @@ export function useAudioWebSocket(
     );
   }, [sessionId]);
 
+  const startCall = useCallback(
+    (language = "en", customerId?: string) => {
+      if (!socketRef.current || socketRef.current.readyState !== WebSocket.OPEN) {
+        console.error("WebSocket not connected");
+        return;
+      }
+
+      socketRef.current.send(
+        JSON.stringify({
+          type: "start_call",
+          session_id: sessionId,
+          language,
+          customer_id: customerId,
+        })
+      );
+    },
+    [sessionId]
+  );
+
+  const sendUserMessage = useCallback(
+    (content: string, language = "en", customerId?: string) => {
+      if (!socketRef.current || socketRef.current.readyState !== WebSocket.OPEN) {
+        console.error("WebSocket not connected");
+        return;
+      }
+
+      socketRef.current.send(
+        JSON.stringify({
+          type: "user_message",
+          session_id: sessionId,
+          content,
+          language,
+          customer_id: customerId,
+        })
+      );
+    },
+    [sessionId]
+  );
+
   // Disconnect
   const disconnect = useCallback(() => {
     if (socketRef.current) {
-      socketRef.current.close();
+      const socket = socketRef.current;
       socketRef.current = null;
+      socket.close();
     }
     if (reconnectTimeoutRef.current) {
       clearTimeout(reconnectTimeoutRef.current);
@@ -229,5 +298,7 @@ export function useAudioWebSocket(
     sendAudioChunk,
     startAudioStream,
     endAudioStream,
+    startCall,
+    sendUserMessage,
   };
 }

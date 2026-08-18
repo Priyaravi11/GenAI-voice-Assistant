@@ -38,6 +38,16 @@ class BillingAgent:
         Final Response
     """
 
+    def __init__(
+        self,
+        gemini: Any = None,
+        rag: Any = None,
+        billing_tool: Any = None,
+    ):
+        self.gemini = gemini
+        self.rag = rag
+        self.billing_tool = billing_tool
+
     # ==========================================================
     # MAIN ENTRY POINT
     # ==========================================================
@@ -59,7 +69,7 @@ class BillingAgent:
 
         if not query:
             return self._error_response(
-                "Billing query cannot be empty."
+                "I didn't receive a billing question."
             )
 
         try:
@@ -72,6 +82,8 @@ class BillingAgent:
                 query=query,
                 context=context,
             )
+            if hasattr(rag_context, "__await__"):
+                rag_context = await rag_context
 
             # --------------------------------------------------
             # 2. Decide whether a billing tool is required
@@ -118,9 +130,10 @@ class BillingAgent:
                 # Customer ID is available, execute tool
                 # ===================================================
 
-                billing_data = self._call_billing_tool(
+                billing_data = await self._get_billing_data(
+                    query=query,
+                    context=context,
                     tool_name=tool_name,
-                    customer_id=customer_id,
                 )
 
             # --------------------------------------------------
@@ -161,6 +174,63 @@ class BillingAgent:
                 "billing request right now."
             )
 
+    async def _get_billing_data(
+        self,
+        query: str,
+        context: Dict[str, Any],
+        tool_name: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        selected_tool = tool_name or self._select_billing_tool(query) or "get_current_bill"
+        customer_id = context.get("customer_id")
+
+        if not customer_id:
+            return {
+                "success": False,
+                "requires_customer_id": True,
+                "message": "Please provide your customer ID.",
+            }
+
+        if self.billing_tool is not None:
+            try:
+                if selected_tool in ("get_current_bill", "get_previous_bill") and hasattr(
+                    self.billing_tool,
+                    "get_bill",
+                ):
+                    result = self.billing_tool.get_bill(customer_id)
+                elif selected_tool == "get_bill_history" and hasattr(
+                    self.billing_tool,
+                    "get_bill_history",
+                ):
+                    result = self.billing_tool.get_bill_history(customer_id)
+                elif selected_tool == "check_duplicate_bill" and hasattr(
+                    self.billing_tool,
+                    "check_duplicate_bill",
+                ):
+                    result = self.billing_tool.check_duplicate_bill(customer_id)
+                else:
+                    result = None
+
+                if hasattr(result, "__await__"):
+                    result = await result
+
+                if result is not None:
+                    return {
+                        "success": True,
+                        "data": result,
+                    }
+
+            except Exception as exc:
+                return {
+                    "success": False,
+                    "message": "Failed to retrieve billing information",
+                    "error": str(exc),
+                }
+
+        return self._call_billing_tool(
+            tool_name=selected_tool,
+            customer_id=customer_id,
+        )
+
     # ==========================================================
     # RAG
     # ==========================================================
@@ -172,6 +242,13 @@ class BillingAgent:
     ) -> Optional[Dict[str, Any]]:
 
         try:
+            if self.rag is not None:
+                if hasattr(self.rag, "retrieve"):
+                    result = self.rag.retrieve(query)
+                    return result
+
+                if hasattr(self.rag, "search"):
+                    return self.rag.search(query=query)
 
             request_id = context.get(
                 "request_id",
@@ -347,6 +424,12 @@ class BillingAgent:
 
         return None
 
+    def _requires_customer_data(
+        self,
+        query: str,
+    ) -> bool:
+        return self._select_billing_tool(query) is not None
+
     # ==========================================================
     # BILLING TOOL EXECUTION
     # ==========================================================
@@ -471,6 +554,21 @@ Give only the final customer-facing answer.
 """
 
         try:
+            if self.gemini is not None:
+                if hasattr(self.gemini, "generate"):
+                    response = self.gemini.generate(
+                        prompt=prompt,
+                        context=context,
+                    )
+
+                    if hasattr(response, "__await__"):
+                        response = await response
+
+                    if isinstance(response, dict):
+                        response = response.get("response")
+
+                    if response and str(response).strip():
+                        return str(response).strip()
 
             response = await generate_text(
                 prompt

@@ -33,12 +33,12 @@ def test_import(module_path: str, item_name: str = None) -> Tuple[bool, str]:
         if item_name:
             module = __import__(module_path, fromlist=[item_name])
             getattr(module, item_name)
-            return True, f"✓ {module_path}.{item_name}"
+            return True, f"[PASS] {module_path}.{item_name}"
         else:
             __import__(module_path)
-            return True, f"✓ {module_path}"
+            return True, f"[PASS] {module_path}"
     except Exception as e:
-        return False, f"✗ {module_path}: {str(e)}"
+        return False, f"[FAIL] {module_path}: {str(e)}"
 
 imports_to_test = [
     ("backend.app.context", "SessionContext"),
@@ -88,23 +88,23 @@ try:
     # Check fields
     for field in required_fields:
         if hasattr(context, field):
-            print(f"  ✓ Field: {field}")
+            print(f"  [PASS] Field: {field}")
             checks_passed += 1
         else:
-            print(f"  ✗ Field missing: {field}")
+            print(f"  [FAIL] Field missing: {field}")
             checks_failed += 1
     
     # Check methods
     for method in required_methods:
         if hasattr(context, method) and callable(getattr(context, method)):
-            print(f"  ✓ Method: {method}")
+            print(f"  [PASS] Method: {method}")
             checks_passed += 1
         else:
-            print(f"  ✗ Method missing: {method}")
+            print(f"  [FAIL] Method missing: {method}")
             checks_failed += 1
             
 except Exception as e:
-    print(f"  ✗ Error checking SessionContext: {str(e)}")
+    print(f"  [FAIL] Error checking SessionContext: {str(e)}")
     checks_failed += len(required_fields) + len(required_methods)
 
 # ============================================================================
@@ -128,14 +128,14 @@ for module_path, class_name in agent_classes:
         agent_class = getattr(module, class_name)
         
         if hasattr(agent_class, "handle"):
-            print(f"  ✓ {class_name}.handle() exists")
+            print(f"  [PASS] {class_name}.handle() exists")
             checks_passed += 1
         else:
-            print(f"  ✗ {class_name}.handle() missing")
+            print(f"  [FAIL] {class_name}.handle() missing")
             checks_failed += 1
             
     except Exception as e:
-        print(f"  ✗ Error checking {class_name}: {str(e)}")
+        print(f"  [FAIL] Error checking {class_name}: {str(e)}")
         checks_failed += 1
 
 # ============================================================================
@@ -150,31 +150,31 @@ try:
     # Test valid ID
     is_valid, msg, normalized = validate_customer_id("C251")
     if is_valid and normalized == "C251":
-        print(f"  ✓ validate_customer_id('C251') works correctly")
+        print(f"  [PASS] validate_customer_id('C251') works correctly")
         checks_passed += 1
     else:
-        print(f"  ✗ validate_customer_id('C251') failed: {msg}")
+        print(f"  [FAIL] validate_customer_id('C251') failed: {msg}")
         checks_failed += 1
     
     # Test invalid ID
     is_valid, msg, normalized = validate_customer_id("")
     if not is_valid and normalized is None:
-        print(f"  ✓ validate_customer_id('') correctly rejects empty")
+        print(f"  [PASS] validate_customer_id('') correctly rejects empty")
         checks_passed += 1
     else:
-        print(f"  ✗ validate_customer_id('') should reject empty")
+        print(f"  [FAIL] validate_customer_id('') should reject empty")
         checks_failed += 1
     
     # Test is_customer_id_valid wrapper
     if is_customer_id_valid("C251"):
-        print(f"  ✓ is_customer_id_valid('C251') works correctly")
+        print(f"  [PASS] is_customer_id_valid('C251') works correctly")
         checks_passed += 1
     else:
-        print(f"  ✗ is_customer_id_valid('C251') should return True")
+        print(f"  [FAIL] is_customer_id_valid('C251') should return True")
         checks_failed += 1
         
 except Exception as e:
-    print(f"  ✗ Error testing validation: {str(e)}")
+    print(f"  [FAIL] Error testing validation: {str(e)}")
     traceback.print_exc()
     checks_failed += 3
 
@@ -200,14 +200,14 @@ try:
     
     for method in required_methods:
         if hasattr(orchestrator, method) and callable(getattr(orchestrator, method)):
-            print(f"  ✓ Method: {method}")
+            print(f"  [PASS] Method: {method}")
             checks_passed += 1
         else:
-            print(f"  ✗ Method missing: {method}")
+            print(f"  [FAIL] Method missing: {method}")
             checks_failed += 1
             
 except Exception as e:
-    print(f"  ✗ Error checking Orchestrator: {str(e)}")
+    print(f"  [FAIL] Error checking Orchestrator: {str(e)}")
     traceback.print_exc()
     checks_failed += 6
 
@@ -237,14 +237,14 @@ try:
     
     for field in required_response_fields:
         if field in error_response:
-            print(f"  ✓ BillingAgent response has: {field}")
+            print(f"  [PASS] BillingAgent response has: {field}")
             checks_passed += 1
         else:
-            print(f"  ✗ BillingAgent response missing: {field}")
+            print(f"  [FAIL] BillingAgent response missing: {field}")
             checks_failed += 1
             
 except Exception as e:
-    print(f"  ✗ Error checking BillingAgent response: {str(e)}")
+    print(f"  [FAIL] Error checking BillingAgent response: {str(e)}")
     checks_failed += len(required_response_fields)
 
 # ============================================================================
@@ -264,8 +264,8 @@ print(f"Failed: {checks_failed}")
 print(f"Success Rate: {success_rate:.1f}%")
 
 if checks_failed == 0:
-    print("\n✓ ALL CHECKS PASSED - Implementation is correct!")
+    print("\n[PASS] ALL CHECKS PASSED - Implementation is correct!")
     sys.exit(0)
 else:
-    print(f"\n✗ {checks_failed} checks failed - Review errors above")
+    print(f"\n[FAIL] {checks_failed} checks failed - Review errors above")
     sys.exit(1)

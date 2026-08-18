@@ -59,7 +59,13 @@ from backend.app.agents.technical_agent import TechnicalAgent
 from backend.app.agents.general_agent import GeneralAgent
 
 logger = get_logger(__name__)
-rag_service = None
+# Import RAG Service if available
+try:
+    from rag.retrieval.retriever import Retriever
+    rag_service = Retriever()
+except Exception as e:
+    logger.warning(f"RAG service unavailable, using fallback: {str(e)}")
+    rag_service = None
 
 
 class Orchestrator:

@@ -65,6 +65,8 @@ ehthumbs.db
 
 # Project-specific
 .cache/
+.npm-cache/
+node_modules/
 *.pickle
 *.pkl
 *.tmp

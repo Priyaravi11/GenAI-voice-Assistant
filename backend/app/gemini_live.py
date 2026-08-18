@@ -25,7 +25,7 @@ try:
 except ImportError:
     GoogleAPIError = Exception
 
-from backend.app.gemini import client, get_live_config
+from backend.app.gemini import GEMINI_LIVE_MODEL, client, get_live_config
 from backend.app.logger import get_logger
 
 logger = get_logger(__name__)
@@ -73,7 +73,7 @@ class GeminiLiveSession:
             
             config = get_live_config()
             self.session = await client.aio.live.connect(
-                model="gemini-23.6-flash",
+                model=GEMINI_LIVE_MODEL,
                 config=config,
             )
             
@@ -104,17 +104,12 @@ class GeminiLiveSession:
             return False
 
         try:
-            # Create audio part
-            audio_part = types.Part(
-                inline_data=types.Blob(
-                    mime_type=mime_type,
+            await self.session.send_realtime_input(
+                audio=types.Blob(
                     data=audio_bytes,
+                    mime_type=mime_type,
                 )
             )
-
-            # Send as content
-            content = types.Content(parts=[audio_part])
-            await self.session.send(content)
 
             self.logger.debug(f"Sent {len(audio_bytes)} bytes of audio")
             return True
@@ -138,9 +133,7 @@ class GeminiLiveSession:
             return False
 
         try:
-            text_part = types.Part(text=text)
-            content = types.Content(parts=[text_part])
-            await self.session.send(content)
+            await self.session.send_realtime_input(text=text)
 
             self.logger.debug(f"Sent text: {text[:50]}...")
             return True
@@ -170,32 +163,46 @@ class GeminiLiveSession:
 
                 # Handle server content (response from Gemini)
                 if response.server_content:
-                    for part in response.server_content.parts:
-                        # Audio response
-                        if part.inline_data:
+                    if getattr(response.server_content, "input_transcription", None):
+                        transcript = response.server_content.input_transcription.text
+                        if transcript:
                             yield {
-                                "type": "audio",
-                                "mime_type": part.inline_data.mime_type,
-                                "content": part.inline_data.data,
+                                "type": "input_transcript",
+                                "content": transcript,
                                 "done": False,
                             }
 
-                        # Text response
-                        elif part.text:
+                    if getattr(response.server_content, "output_transcription", None):
+                        transcript = response.server_content.output_transcription.text
+                        if transcript:
                             yield {
-                                "type": "text",
-                                "content": part.text,
+                                "type": "output_transcript",
+                                "content": transcript,
                                 "done": False,
                             }
 
-                # Handle turns to see when response is complete
-                if response.turns:
-                    for turn in response.turns:
-                        if turn.role == "model":
-                            yield {
-                                "type": "turn_complete",
-                                "done": True,
-                            }
+                    if getattr(response.server_content, "model_turn", None):
+                        for part in response.server_content.model_turn.parts:
+                            if part.inline_data:
+                                yield {
+                                    "type": "audio",
+                                    "mime_type": part.inline_data.mime_type,
+                                    "content": part.inline_data.data,
+                                    "done": False,
+                                }
+
+                            elif part.text:
+                                yield {
+                                    "type": "text",
+                                    "content": part.text,
+                                    "done": False,
+                                }
+
+                    if getattr(response.server_content, "turn_complete", False):
+                        yield {
+                            "type": "turn_complete",
+                            "done": True,
+                        }
 
         except asyncio.CancelledError:
             self.logger.info("Session receive cancelled")

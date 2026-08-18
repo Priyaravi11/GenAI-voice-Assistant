@@ -35,19 +35,21 @@ class Colors:
 
 
 def print_success(msg: str) -> None:
-    print(f"{Colors.GREEN}✓ {msg}{Colors.RESET}")
+    """Print success message."""
+    print(f"{Colors.GREEN}[PASS] {msg}{Colors.RESET}")
 
 
 def print_error(msg: str) -> None:
-    print(f"{Colors.RED}✗ {msg}{Colors.RESET}")
+    """Print error message."""
+    print(f"{Colors.RED}[FAIL] {msg}{Colors.RESET}")
 
 
 def print_warning(msg: str) -> None:
-    print(f"{Colors.YELLOW}⚠ {msg}{Colors.RESET}")
+    print(f"{Colors.YELLOW}[WARN] {msg}{Colors.RESET}")
 
 
 def print_info(msg: str) -> None:
-    print(f"{Colors.BLUE}ℹ {msg}{Colors.RESET}")
+    print(f"{Colors.BLUE}[INFO] {msg}{Colors.RESET}")
 
 
 def get_sample_customers() -> List[Dict[str, Any]]:
@@ -244,57 +246,37 @@ def get_sample_escalations() -> List[Dict[str, Any]]:
     ]
 
 
-async def connect_mongodb(connection_string: Optional[str] = None) -> Optional[Any]:
-    """Connect to MongoDB."""
+def connect_mongodb(connection_string: Optional[str] = None):
+    """Connect to MongoDB using pymongo."""
+    from pymongo import MongoClient
+    uri = connection_string or os.getenv("MONGODB_URI", "mongodb://127.0.0.1:27017/telecom_db")
     try:
-        from motor.motor_asyncio import AsyncMongoClient
-    except ImportError:
-        print_error("motor not installed. Install with: pip install motor")
-        return None
-    
-    connection_string = connection_string or os.getenv(
-        "MONGODB_URI",
-        "mongodb://localhost:27017"
-    )
-    
-    try:
-        client = AsyncMongoClient(connection_string)
-        # Test connection
-        await client.admin.command('ping')
-        print_success(f"Connected to MongoDB: {connection_string}")
+        client = MongoClient(uri, serverSelectionTimeoutMS=5000)
+        client.admin.command("ping")
+        print_success("Connected to local MongoDB successfully.")
         return client
     except Exception as e:
-        print_error(f"Failed to connect to MongoDB: {e}")
+        print_error(f"Failed to connect to MongoDB: {str(e)}")
         return None
 
 
-async def clear_collections(db: Any, collections: List[str]) -> None:
+def clear_collections(db: Any, collections: List[str]) -> None:
     """Clear specified collections."""
     for collection_name in collections:
         try:
-            collection = db[collection_name]
-            await collection.delete_many({})
+            db[collection_name].delete_many({})
             print_success(f"Cleared collection: {collection_name}")
         except Exception as e:
             print_error(f"Failed to clear {collection_name}: {e}")
 
 
-async def insert_data(
-    db: Any,
-    collection_name: str,
-    data: List[Dict[str, Any]],
-    dry_run: bool = False
-) -> int:
+def insert_data(db: Any, collection_name: str, data: List[Dict[str, Any]], dry_run: bool = False) -> int:
     """Insert data into collection."""
     if dry_run:
         print_info(f"[DRY RUN] Would insert {len(data)} documents into {collection_name}")
-        for i, doc in enumerate(data, 1):
-            print_info(f"  {i}. {json.dumps({k: str(v) if isinstance(v, (datetime, dict)) else v for k, v in list(doc.items())[:3]}, indent=2)}")
         return len(data)
-    
     try:
-        collection = db[collection_name]
-        result = await collection.insert_many(data)
+        result = db[collection_name].insert_many(data)
         count = len(result.inserted_ids)
         print_success(f"Inserted {count} documents into {collection_name}")
         return count
@@ -303,7 +285,7 @@ async def insert_data(
         return 0
 
 
-async def seed_database(
+def seed_database(
     connection_string: Optional[str] = None,
     dry_run: bool = False,
     clear: bool = False,
@@ -311,71 +293,49 @@ async def seed_database(
     agents_only: bool = False,
 ) -> bool:
     """Main seed function."""
-    print(f"\n{Colors.BOLD}{Colors.BLUE}{'='*60}{Colors.RESET}")
-    print(f"{Colors.BOLD}{Colors.GREEN}MongoDB Seed Script{Colors.RESET}")
-    print(f"{Colors.BOLD}{Colors.BLUE}{'='*60}{Colors.RESET}\n")
+    print(f"\n{'='*60}")
+    print("MongoDB Seed Script")
+    print(f"{'='*60}\n")
     
-    # Connect to MongoDB
-    client = await connect_mongodb(connection_string)
+    client = connect_mongodb(connection_string)
     if not client:
         return False
     
     try:
-        db = client["genai_voice_assistant"]
+        db_name = os.getenv("MONGODB_DATABASE", "telecom_db")
+        db = client[db_name]
         
-        # Clear collections if requested
         if clear:
             print_info("Clearing existing data...")
-            await clear_collections(db, [
-                "customers",
-                "billing",
-                "calls",
-                "agents",
-                "escalations"
-            ])
+            clear_collections(db, ["customers", "billing", "calls", "agents", "escalations"])
         
-        # Prepare seed data
-        seed_tasks = []
         total_inserts = 0
+        if customers_only or not agents_only:
+            print_info("Seeding customers...")
+            total_inserts += insert_data(db, "customers", get_sample_customers(), dry_run)
         
-        if customers_only or not any([agents_only]):
-            print_info("\nSeeding customers...")
-            customers = get_sample_customers()
-            total_inserts += await insert_data(db, "customers", customers, dry_run)
-        
-        if not customers_only:
-            if not any([agents_only]):
-                print_info("\nSeeding billing data...")
-                billing = get_sample_billing()
-                total_inserts += await insert_data(db, "billing", billing, dry_run)
-                
-                print_info("\nSeeding call records...")
-                calls = get_sample_calls()
-                total_inserts += await insert_data(db, "calls", calls, dry_run)
-                
-                print_info("\nSeeding escalation cases...")
-                escalations = get_sample_escalations()
-                total_inserts += await insert_data(db, "escalations", escalations, dry_run)
+        if not customers_only and not agents_only:
+            print_info("Seeding billing data...")
+            total_inserts += insert_data(db, "billing", get_sample_billing(), dry_run)
+            
+            print_info("Seeding call records...")
+            total_inserts += insert_data(db, "calls", get_sample_calls(), dry_run)
+            
+            print_info("Seeding escalation cases...")
+            total_inserts += insert_data(db, "escalations", get_sample_escalations(), dry_run)
         
         if agents_only or not customers_only:
-            print_info("\nSeeding agent profiles...")
-            agents = get_sample_agents()
-            total_inserts += await insert_data(db, "agents", agents, dry_run)
+            print_info("Seeding agent profiles...")
+            total_inserts += insert_data(db, "agents", get_sample_agents(), dry_run)
         
-        # Print summary
-        print(f"\n{Colors.BOLD}{Colors.BLUE}{'='*60}{Colors.RESET}")
-        if dry_run:
-            print(f"{Colors.YELLOW}DRY RUN: {total_inserts} documents would be inserted{Colors.RESET}")
-        else:
-            print(f"{Colors.GREEN}Successfully inserted {total_inserts} documents{Colors.RESET}")
-        print(f"{Colors.BOLD}{Colors.BLUE}{'='*60}{Colors.RESET}\n")
-        
+        print(f"\n{'='*60}")
+        print(f"Successfully inserted {total_inserts} documents")
+        print(f"{'='*60}\n")
         return True
     
     except Exception as e:
         print_error(f"Seeding failed: {e}")
         return False
-    
     finally:
         client.close()
 
@@ -410,14 +370,14 @@ def main():
     
     args = parser.parse_args()
     
-    # Run async seeding
-    success = asyncio.run(seed_database(
+    # Run seeding
+    success = seed_database(
         connection_string=args.mongodb_uri,
         dry_run=args.dry_run,
         clear=args.clear,
         customers_only=args.customers_only,
         agents_only=args.agents_only,
-    ))
+    )
     
     return 0 if success else 1
 

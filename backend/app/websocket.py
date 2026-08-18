@@ -59,6 +59,7 @@ import asyncio
 
 from fastapi import APIRouter, WebSocketException, status
 from fastapi.websockets import WebSocket
+from starlette.websockets import WebSocketDisconnect
 
 from backend.app.context import get_or_create_session, remove_session
 from backend.app.orchestrator import orchestrator
@@ -227,8 +228,18 @@ async def websocket_endpoint(
                     },
                 )
                 continue
+            except WebSocketDisconnect as e:
+                if e.code in (1000, 1001, 1005):
+                    logger.info(
+                        f"WebSocket disconnected normally: {session_id} | code={e.code}"
+                    )
+                else:
+                    logger.warning(
+                        f"WebSocket disconnected: {session_id} | code={e.code}"
+                    )
+                break
             except Exception as e:
-                logger.error(f"Failed to receive message: {str(e)}")
+                logger.warning(f"Failed to receive message: {str(e)}")
                 break
 
             # ====================================================
@@ -310,6 +321,15 @@ async def websocket_endpoint(
                     },
                 )
 
+    except WebSocketDisconnect as e:
+        if e.code in (1000, 1001, 1005):
+            logger.info(
+                f"WebSocket disconnected normally: {session_id} | code={e.code}"
+            )
+        else:
+            logger.warning(
+                f"WebSocket disconnected: {session_id} | code={e.code}"
+            )
     except Exception as e:
         logger.error(f"WebSocket error: {str(e)}")
 
@@ -405,6 +425,7 @@ async def _handle_user_message(
                 "content": response,
                 "language": language,
                 "confidence": confidence,
+                "agent": result.get("agent", "general"),
                 "intent": intent,
                 "escalated": escalated,
                 "requires_customer_id": requires_customer_id,
@@ -636,6 +657,11 @@ async def _handle_audio_chunk(
             return
 
         # Send to Gemini Live
+        logger.info(
+            f"Audio frame received: session={session_id} | "
+            f"bytes={len(audio_bytes)} | mime_type={mime_type}"
+        )
+
         success = await live_session.send_audio(audio_bytes, mime_type)
 
         if not success:
@@ -697,6 +723,8 @@ async def _audio_response_handler(session_id: str) -> None:
             logger.error(f"Live session not found: {session_id}")
             return
 
+        pending_input_transcript = ""
+
         async for response in live_session.receive_response():
             if not manager.is_connected(session_id):
                 logger.info(f"Client disconnected: {session_id}")
@@ -717,6 +745,31 @@ async def _audio_response_handler(session_id: str) -> None:
                     },
                 )
 
+            elif response_type == "input_transcript":
+                transcript = response.get("content", "").strip()
+                if transcript:
+                    pending_input_transcript = transcript
+                    await manager.send_personal(
+                        session_id,
+                        {
+                            "type": "transcript",
+                            "speaker": "customer",
+                            "content": transcript,
+                        },
+                    )
+
+            elif response_type == "output_transcript":
+                transcript = response.get("content", "").strip()
+                if transcript:
+                    await manager.send_personal(
+                        session_id,
+                        {
+                            "type": "transcript",
+                            "speaker": "assistant",
+                            "content": transcript,
+                        },
+                    )
+
             elif response_type == "text":
                 await manager.send_personal(
                     session_id,
@@ -727,6 +780,13 @@ async def _audio_response_handler(session_id: str) -> None:
                 )
 
             elif response_type == "turn_complete":
+                if pending_input_transcript:
+                    await _process_audio_transcript(
+                        session_id=session_id,
+                        transcript=pending_input_transcript,
+                    )
+                    pending_input_transcript = ""
+
                 await manager.send_personal(
                     session_id,
                     {
@@ -753,6 +813,72 @@ async def _audio_response_handler(session_id: str) -> None:
             {
                 "type": "error",
                 "error": f"Audio stream error: {str(e)}",
+            },
+        )
+
+
+async def _process_audio_transcript(
+    session_id: str,
+    transcript: str,
+) -> None:
+    """
+    Route a Gemini Live input transcript through the standard text
+    orchestrator so voice calls use Supervisor, RAG, and tools.
+    """
+
+    context = manager.session_contexts.get(session_id)
+    language = context.language if context else "en"
+    customer_id = context.customer_id if context else None
+
+    try:
+        await manager.send_personal(
+            session_id,
+            {
+                "type": "status",
+                "status": "processing",
+                "message": "Processing voice transcript...",
+            },
+        )
+
+        result = await orchestrator.process_text(
+            session_id=session_id,
+            customer_query=transcript,
+            language=language,
+            customer_id=customer_id,
+        )
+
+        await manager.send_personal(
+            session_id,
+            {
+                "type": "assistant_response",
+                "content": result.get("response", ""),
+                "language": language,
+                "confidence": result.get("confidence", 0.0),
+                "agent": result.get("agent", "general"),
+                "intent": result.get("intent", result.get("agent", "general")),
+                "escalated": result.get("escalated", False),
+                "requires_customer_id": result.get("requires_customer_id", False),
+                "source": "audio_transcript",
+            },
+        )
+
+        if result.get("escalated"):
+            await manager.send_personal(
+                session_id,
+                {
+                    "type": "escalation_notice",
+                    "reason": result.get("escalation_reason", "Escalated to human agent"),
+                    "confidence": result.get("confidence", 0.0),
+                },
+            )
+
+    except Exception as e:
+        logger.error(f"Failed to process audio transcript: {str(e)}", exc_info=True)
+        await manager.send_personal(
+            session_id,
+            {
+                "type": "error",
+                "error": "Failed to process the voice transcript. Please try again.",
             },
         )
 

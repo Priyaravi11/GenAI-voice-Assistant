@@ -159,19 +159,44 @@ async def generate_text(prompt: str) -> str:
     if len(prompt) > 100000:
         raise ValueError("Prompt exceeds maximum length (100k chars)")
 
+    models_to_try = [
+        "gemini-2.5-flash",
+        "gemini-2.0-flash",
+    ]
+
+    last_exception = None
+
+    for model_name in models_to_try:
+        for attempt in range(3):
+            try:
+                response = await client.aio.models.generate_content(
+                    model=model_name,
+                    contents=prompt,
+                )
+
+                if response and response.text:
+                    return response.text
+
+            except Exception as e:
+                last_exception = e
+                err_str = str(e)
+                if "503" in err_str or "UNAVAILABLE" in err_str or "429" in err_str:
+                    import asyncio
+                    await asyncio.sleep(1.0 * (attempt + 1))
+                    continue
+                # For non-retryable errors, switch model immediately
+                break
+
+    # Attempt Ollama Fallback if Gemini models fail
     try:
-        response = await client.aio.models.generate_content(
-            model="gemini-3.6-flash",
-            contents=prompt,
-        )
+        from backend.app.ollama_provider import ollama_provider
+        ollama_response = await ollama_provider.generate_text(prompt)
+        if ollama_response:
+            return ollama_response
+    except Exception as ollama_err:
+        logger.warning(f"Ollama fallback attempt failed: {str(ollama_err)}")
 
-        if not response.text:
-            raise ValueError("Gemini returned empty response")
-
-        return response.text
-
-    except Exception as e:
-        raise RuntimeError(f"Gemini generation failed: {str(e)}")
+    raise RuntimeError(f"Gemini generation failed across models: {str(last_exception)}")
 
 
 # ============================================================

@@ -1,7 +1,8 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import EndCall from "../../components/CallControls/EndCall";
-import { useGeminiLive } from "../../hooks/useGeminiLive";
-import { useWebSocket } from "../../hooks/useWebSocket";
+import { useAudioPlayer } from "../../hooks/useAudioPlayer";
+import { useAudioRecorder } from "../../hooks/useAudioRecorder";
+import { useAudioWebSocket } from "../../hooks/useAudioWebSocket";
 import type { TranscriptEntry } from "../../types";
 
 const presetQueries = [
@@ -36,87 +37,118 @@ function LiveCall({ onEndCall, onOpenEscalationDesk, isAdmin = false }: LiveCall
   const [inputText, setInputText] = useState("");
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [isPaused, setIsPaused] = useState(false);
+  const [voiceStatus, setVoiceStatus] = useState("Idle");
+  const [micError, setMicError] = useState<string | null>(null);
   const [transcript, setTranscript] = useState<TranscriptEntry[]>(baseTranscript);
-  const live = useGeminiLive();
-  const socket = useWebSocket(sessionId);
+  const player = useAudioPlayer();
 
   function languageCode(label: string) {
     if (label.includes("Hindi")) return "hi";
     if (label.includes("Tamil")) return "ta";
     if (label.includes("Telugu")) return "te";
+    if (label.includes("Kannada")) return "kn";
+    if (label.includes("Malayalam")) return "ml";
     return "en";
   }
 
+  const addTranscript = useCallback((entry: Omit<TranscriptEntry, "id" | "time">) => {
+    setTranscript((current) => [
+      ...current,
+      {
+        ...entry,
+        id: `${entry.speaker}-${Date.now()}-${current.length}`,
+        time: "Now",
+      },
+    ]);
+  }, []);
+
+  const speakText = useCallback((text: string, lang: string) => {
+    if (!("speechSynthesis" in window) || !text.trim()) return;
+
+    window.speechSynthesis.cancel();
+    const utterance = new SpeechSynthesisUtterance(text);
+    utterance.lang = lang === "hi" ? "hi-IN" : lang === "ta" ? "ta-IN" : lang === "te" ? "te-IN" : lang === "kn" ? "kn-IN" : lang === "ml" ? "ml-IN" : "en-US";
+    window.speechSynthesis.speak(utterance);
+  }, []);
+
+  const socket = useAudioWebSocket(sessionId, {
+    onAudioResponse: (data, mimeType) => {
+      setVoiceStatus("Assistant speaking");
+      player.queueAudioChunk(data, mimeType);
+    },
+    onTranscript: (text) => {
+      if (!text.trim()) return;
+      setIsAnalyzing(true);
+      addTranscript({
+        speaker: "Customer",
+        language: language.replace(/\s+\(.+\)/, ""),
+        text,
+        confidence: 90,
+      });
+    },
+    onAssistantResponse: (message) => {
+      if (message.content) {
+        setIsAnalyzing(false);
+        setVoiceStatus("Assistant speaking");
+        const isCustomerIdPrompt = message.requires_customer_id;
+        const agentLabel = message.agent ? `Agent: ${message.agent.toUpperCase()}` : "";
+        const actionLabel = isCustomerIdPrompt ? "⚠️ Action required: Customer ID expected for account verification" : "";
+        const note = [agentLabel, actionLabel].filter(Boolean).join(" | ");
+
+        addTranscript({
+          speaker: "VoiceAI",
+          language: message.language || languageCode(language),
+          text: message.content || "",
+          confidence: Math.round((message.confidence ?? 0.9) * 100),
+          translated: note || undefined,
+        });
+        speakText(message.content || "", message.language || languageCode(language));
+      }
+    },
+    onError: (error) => {
+      setMicError(error || "Something went wrong while processing the request.");
+      setIsAnalyzing(false);
+      setVoiceStatus("Error");
+      addTranscript({
+        speaker: "VoiceAI",
+        language: "English",
+        text: error || "Something went wrong while processing the request.",
+        confidence: 0,
+      });
+    },
+    onEscalation: (message) => {
+      addTranscript({
+        speaker: "VoiceAI",
+        language: "English",
+        text: message.reason || "This request has been marked for human escalation.",
+        confidence: Math.round((message.confidence ?? 0.7) * 100),
+      });
+    },
+    onReady: () => setVoiceStatus("Listening"),
+    onStreamClosed: () => setVoiceStatus("Idle"),
+    onStatus: (message) => {
+      if (message.status === "processing") setVoiceStatus("Processing");
+    },
+  });
+
+  const recorder = useAudioRecorder({
+    onAudioChunk: (chunk, mimeType) => {
+      socket.sendAudioChunk(chunk, mimeType);
+    },
+    onError: (error) => {
+      const permissionMessage =
+        error.name === "NotAllowedError"
+          ? "Microphone access is required. Please allow microphone permission in your browser and try again."
+          : error.message;
+      setMicError(permissionMessage);
+      setVoiceStatus("Microphone unavailable");
+    },
+  });
+
   useEffect(() => {
     if (!socket.connected) return;
-
-    socket.send({
-      type: "start_call",
-      session_id: sessionId,
-      language: languageCode(language),
-    });
-  }, [language, sessionId, socket.connected]);
-
-  useEffect(() => {
-    if (!socket.lastMessage) return;
-
-    try {
-      const message = JSON.parse(socket.lastMessage) as {
-        type?: string;
-        content?: string;
-        error?: string;
-        language?: string;
-        confidence?: number;
-        reason?: string;
-      };
-
-      if (message.type === "assistant_response" && message.content) {
-        setIsAnalyzing(false);
-        setTranscript((current) => [
-          ...current,
-          {
-            id: `a-${Date.now()}`,
-            speaker: "VoiceAI",
-            language: message.language || languageCode(language),
-            text: message.content || "",
-            time: "Now",
-            confidence: Math.round((message.confidence ?? 0.9) * 100),
-          },
-        ]);
-      }
-
-      if (message.type === "error" && message.error) {
-        setIsAnalyzing(false);
-        setTranscript((current) => [
-          ...current,
-          {
-            id: `e-${Date.now()}`,
-            speaker: "VoiceAI",
-            language: "English",
-            text: message.error || "Something went wrong while processing the request.",
-            time: "Now",
-            confidence: 0,
-          },
-        ]);
-      }
-
-      if (message.type === "escalation_notice") {
-        setTranscript((current) => [
-          ...current,
-          {
-            id: `x-${Date.now()}`,
-            speaker: "VoiceAI",
-            language: "English",
-            text: message.reason || "This request has been marked for human escalation.",
-            time: "Now",
-            confidence: Math.round((message.confidence ?? 0.7) * 100),
-          },
-        ]);
-      }
-    } catch {
-      // Ignore non-JSON messages from browser/dev tooling.
-    }
-  }, [language, socket.lastMessage]);
+    socket.startCall(languageCode(language));
+  }, [language, socket.connected]);
 
   function detectLanguage(text: string) {
     if (/[\u0900-\u097F]/.test(text)) return "Hindi";
@@ -145,16 +177,43 @@ function LiveCall({ onEndCall, onOpenEscalationDesk, isAdmin = false }: LiveCall
     ]);
     setInputText("");
 
-    socket.send({
-      type: "user_message",
-      session_id: sessionId,
-      content: trimmed,
-      language: languageCode(language),
-    });
+    socket.sendUserMessage(trimmed, languageCode(language));
+  }
+
+  async function startVoiceSession() {
+    setMicError(null);
+    setVoiceStatus("Requesting mic permission");
+    socket.startAudioStream(languageCode(language));
+    await recorder.startRecording();
+    setVoiceStatus("Listening");
+  }
+
+  async function stopVoiceSession() {
+    await recorder.stopRecording();
+    socket.endAudioStream();
+    setVoiceStatus("Idle");
+  }
+
+  function toggleVoiceSession() {
+    if (!socket.connected) {
+      setMicError("Voice connection is still starting. Please try again in a moment.");
+      return;
+    }
+
+    if (recorder.isRecording) {
+      void stopVoiceSession();
+      return;
+    }
+
+    void startVoiceSession();
   }
 
   function handleEndCall() {
-    live.stop();
+    window.speechSynthesis?.cancel();
+    player.stop();
+    void recorder.stopRecording();
+    socket.endAudioStream();
+    socket.disconnect();
     onEndCall?.();
   }
 
@@ -163,7 +222,7 @@ function LiveCall({ onEndCall, onOpenEscalationDesk, isAdmin = false }: LiveCall
       <section className="live-status-strip">
         <div className="live-connection-pill">
           <span />
-          Connected - Real-time Analysis Active
+          {socket.connected ? `Connected - ${voiceStatus}` : "Connecting"}
         </div>
 
         <div className="live-strip-actions">
@@ -174,7 +233,8 @@ function LiveCall({ onEndCall, onOpenEscalationDesk, isAdmin = false }: LiveCall
               <option>Hindi (hi)</option>
               <option>Tamil (ta)</option>
               <option>Telugu (te)</option>
-              <option>Spanish (es)</option>
+              <option>Kannada (kn)</option>
+              <option>Malayalam (ml)</option>
             </select>
           </label>
           <div className="detecting-pill">
@@ -198,10 +258,10 @@ function LiveCall({ onEndCall, onOpenEscalationDesk, isAdmin = false }: LiveCall
           <div className="live-orb-zone" aria-label="Voice call activity">
             {isPaused ? <div className="hold-banner">Call is currently on hold</div> : null}
             <button
-              className={live.listening ? "call-orb active" : "call-orb"}
+              className={recorder.isRecording ? "call-orb active" : "call-orb"}
               type="button"
-              onClick={live.toggleListening}
-              aria-pressed={live.listening}
+              onClick={toggleVoiceSession}
+              aria-pressed={recorder.isRecording}
             >
               <span className="orb-shadow" />
               <span className="orb-bars" aria-hidden="true">
@@ -229,10 +289,10 @@ function LiveCall({ onEndCall, onOpenEscalationDesk, isAdmin = false }: LiveCall
           <footer className="live-control-bar">
             <div className="left-call-controls">
               <button
-                className={live.listening ? "round-control active" : "round-control"}
+                className={recorder.isRecording ? "round-control active" : "round-control"}
                 type="button"
-                onClick={live.toggleListening}
-                aria-label={live.listening ? "Mute microphone" : "Start microphone"}
+                onClick={toggleVoiceSession}
+                aria-label={recorder.isRecording ? "Stop microphone" : "Start microphone"}
               >
                 Mic
               </button>
@@ -248,7 +308,7 @@ function LiveCall({ onEndCall, onOpenEscalationDesk, isAdmin = false }: LiveCall
 
             <div className="mini-wave" aria-hidden="true">
               {Array.from({ length: 12 }, (_, index) => (
-                <i key={index} />
+                <i key={index} style={{ transform: `scaleY(${recorder.isRecording ? 0.35 + recorder.audioLevel / 100 : 1})` }} />
               ))}
             </div>
 
@@ -264,6 +324,8 @@ function LiveCall({ onEndCall, onOpenEscalationDesk, isAdmin = false }: LiveCall
               </div>
             </div>
           ) : null}
+
+          {micError ? <div className="error-inline">{micError}</div> : null}
         </div>
 
         <aside className="transcription-panel">

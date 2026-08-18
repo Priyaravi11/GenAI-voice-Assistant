@@ -1,12 +1,8 @@
 /**
  * Audio Recorder Hook
  * File: frontend/src/hooks/useAudioRecorder.ts
- * 
- * Captures audio from user's microphone and provides:
- * - Real-time audio recording
- * - Audio chunk streaming
- * - Recording state management
- * - Audio processing and encoding
+ *
+ * Captures microphone audio as 16 kHz mono PCM for Gemini Live.
  */
 
 import { useEffect, useRef, useState, useCallback } from "react";
@@ -16,186 +12,199 @@ export interface AudioRecorderState {
   isPaused: boolean;
   recordedChunks: Blob[];
   audioLevel: number;
+  mimeType: string;
 }
 
 export interface UseAudioRecorderOptions {
-  onAudioChunk?: (chunk: ArrayBuffer) => void;
+  onAudioChunk?: (chunk: ArrayBuffer, mimeType: string) => void;
   onError?: (error: Error) => void;
-  mimeType?: string;
   sampleRate?: number;
 }
 
+const PCM_MIME_TYPE = "audio/pcm;rate=16000";
+
+function downsampleBuffer(buffer: Float32Array, inputSampleRate: number, outputSampleRate: number) {
+  if (outputSampleRate === inputSampleRate) return buffer;
+  if (outputSampleRate > inputSampleRate) {
+    throw new Error("Output sample rate must be lower than input sample rate");
+  }
+
+  const ratio = inputSampleRate / outputSampleRate;
+  const newLength = Math.round(buffer.length / ratio);
+  const result = new Float32Array(newLength);
+
+  let offsetResult = 0;
+  let offsetBuffer = 0;
+
+  while (offsetResult < result.length) {
+    const nextOffsetBuffer = Math.round((offsetResult + 1) * ratio);
+    let accumulator = 0;
+    let count = 0;
+
+    for (let i = offsetBuffer; i < nextOffsetBuffer && i < buffer.length; i += 1) {
+      accumulator += buffer[i];
+      count += 1;
+    }
+
+    result[offsetResult] = accumulator / Math.max(count, 1);
+    offsetResult += 1;
+    offsetBuffer = nextOffsetBuffer;
+  }
+
+  return result;
+}
+
+function floatTo16BitPcm(buffer: Float32Array) {
+  const output = new ArrayBuffer(buffer.length * 2);
+  const view = new DataView(output);
+
+  for (let i = 0; i < buffer.length; i += 1) {
+    const sample = Math.max(-1, Math.min(1, buffer[i]));
+    view.setInt16(i * 2, sample < 0 ? sample * 0x8000 : sample * 0x7fff, true);
+  }
+
+  return output;
+}
+
 export function useAudioRecorder(options: UseAudioRecorderOptions = {}) {
-  const {
-    onAudioChunk,
-    onError,
-    mimeType = "audio/wav",
-    sampleRate = 16000,
-  } = options;
+  const { onAudioChunk, onError, sampleRate = 16000 } = options;
 
   const [state, setState] = useState<AudioRecorderState>({
     isRecording: false,
     isPaused: false,
     recordedChunks: [],
     audioLevel: 0,
+    mimeType: PCM_MIME_TYPE,
   });
 
-  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
-  const analyzerRef = useRef<AnalyserNode | null>(null);
-  const volumeCheckIntervalRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const sourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
+  const processorRef = useRef<ScriptProcessorNode | null>(null);
+  const isPausedRef = useRef(false);
+  const isRecordingRef = useRef(false);
 
-  // Request microphone access
+  const cleanup = useCallback(() => {
+    processorRef.current?.disconnect();
+    sourceRef.current?.disconnect();
+    streamRef.current?.getTracks().forEach((track) => track.stop());
+    audioContextRef.current?.close();
+
+    processorRef.current = null;
+    sourceRef.current = null;
+    streamRef.current = null;
+    audioContextRef.current = null;
+    isRecordingRef.current = false;
+    isPausedRef.current = false;
+  }, []);
+
   const startRecording = useCallback(async () => {
     try {
-      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-        throw new Error("Your browser does not support audio recording");
+      if (!navigator.mediaDevices?.getUserMedia) {
+        throw new Error("Your browser does not support microphone capture.");
       }
+
+      if (isRecordingRef.current) return;
 
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: {
           channelCount: 1,
-          sampleRate: sampleRate,
           echoCancellation: true,
           noiseSuppression: true,
           autoGainControl: true,
         },
       });
 
-      streamRef.current = stream;
+      const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+      const audioContext = new AudioContextClass();
+      await audioContext.resume();
 
-      // Create audio context for volume monitoring
-      const audioContext = new (window.AudioContext ||
-        (window as any).webkitAudioContext)();
-      audioContextRef.current = audioContext;
-
-      const analyzer = audioContext.createAnalyser();
-      analyzer.fftSize = 256;
       const source = audioContext.createMediaStreamSource(stream);
-      source.connect(analyzer);
-      analyzerRef.current = analyzer;
+      const processor = audioContext.createScriptProcessor(4096, 1, 1);
 
-      // Create media recorder
-      const mediaRecorder = new MediaRecorder(stream, {
-        mimeType: mimeType,
-      });
+      processor.onaudioprocess = (event) => {
+        if (!isRecordingRef.current || isPausedRef.current) return;
 
-      mediaRecorderRef.current = mediaRecorder;
+        const input = event.inputBuffer.getChannelData(0);
+        const downsampled = downsampleBuffer(input, audioContext.sampleRate, sampleRate);
+        const pcm = floatTo16BitPcm(downsampled);
 
-      const chunks: Blob[] = [];
-
-      mediaRecorder.ondataavailable = (event: BlobEvent) => {
-        if (event.data.size > 0) {
-          chunks.push(event.data);
-          
-          // Convert to ArrayBuffer for streaming
-          const reader = new FileReader();
-          reader.onload = (e) => {
-            const arrayBuffer = e.target?.result as ArrayBuffer;
-            if (onAudioChunk && arrayBuffer.byteLength > 0) {
-              onAudioChunk(arrayBuffer);
-            }
-          };
-          reader.readAsArrayBuffer(event.data);
+        let sum = 0;
+        for (let i = 0; i < input.length; i += 1) {
+          sum += input[i] * input[i];
         }
-      };
-
-      mediaRecorder.start(100); // Emit data every 100ms for streaming
-
-      setState((prev) => ({
-        ...prev,
-        isRecording: true,
-        isPaused: false,
-        recordedChunks: chunks,
-      }));
-
-      // Monitor audio volume
-      const monitorVolume = () => {
-        const dataArray = new Uint8Array(analyzer.frequencyBinCount);
-        analyzer.getByteFrequencyData(dataArray);
-        const average =
-          dataArray.reduce((a, b) => a + b) / dataArray.length;
-        const level = (average / 255) * 100;
+        const level = Math.min(100, Math.sqrt(sum / input.length) * 180);
 
         setState((prev) => ({
           ...prev,
           audioLevel: level,
         }));
+
+        if (pcm.byteLength > 0) {
+          onAudioChunk?.(pcm, PCM_MIME_TYPE);
+        }
       };
 
-      volumeCheckIntervalRef.current = setInterval(monitorVolume, 50);
-    } catch (error) {
-      const err = error instanceof Error ? error : new Error(String(error));
-      if (onError) onError(err);
-      console.error("Failed to start recording:", err);
-    }
-  }, [mimeType, sampleRate, onAudioChunk, onError]);
+      source.connect(processor);
+      processor.connect(audioContext.destination);
 
-  // Stop recording
-  const stopRecording = useCallback(async () => {
-    if (mediaRecorderRef.current && state.isRecording) {
-      mediaRecorderRef.current.stop();
-
-      // Clean up
-      if (volumeCheckIntervalRef.current) {
-        clearInterval(volumeCheckIntervalRef.current);
-      }
-
-      if (streamRef.current) {
-        streamRef.current.getTracks().forEach((track) => track.stop());
-      }
-
-      if (audioContextRef.current) {
-        audioContextRef.current.close();
-      }
+      streamRef.current = stream;
+      audioContextRef.current = audioContext;
+      sourceRef.current = source;
+      processorRef.current = processor;
+      isRecordingRef.current = true;
+      isPausedRef.current = false;
 
       setState((prev) => ({
         ...prev,
-        isRecording: false,
+        isRecording: true,
         isPaused: false,
+        recordedChunks: [],
         audioLevel: 0,
       }));
+    } catch (error) {
+      cleanup();
+      const err = error instanceof Error ? error : new Error(String(error));
+      onError?.(err);
     }
-  }, [state.isRecording]);
+  }, [cleanup, onAudioChunk, onError, sampleRate]);
 
-  // Pause recording
+  const stopRecording = useCallback(async () => {
+    cleanup();
+    setState((prev) => ({
+      ...prev,
+      isRecording: false,
+      isPaused: false,
+      audioLevel: 0,
+    }));
+  }, [cleanup]);
+
   const pauseRecording = useCallback(() => {
-    if (mediaRecorderRef.current && state.isRecording) {
-      mediaRecorderRef.current.pause();
-      setState((prev) => ({
-        ...prev,
-        isPaused: true,
-      }));
-    }
-  }, [state.isRecording]);
+    if (!isRecordingRef.current) return;
+    isPausedRef.current = true;
+    setState((prev) => ({
+      ...prev,
+      isPaused: true,
+      audioLevel: 0,
+    }));
+  }, []);
 
-  // Resume recording
   const resumeRecording = useCallback(() => {
-    if (mediaRecorderRef.current && state.isPaused) {
-      mediaRecorderRef.current.resume();
-      setState((prev) => ({
-        ...prev,
-        isPaused: false,
-      }));
-    }
-  }, [state.isPaused]);
+    if (!isRecordingRef.current) return;
+    isPausedRef.current = false;
+    setState((prev) => ({
+      ...prev,
+      isPaused: false,
+    }));
+  }, []);
 
-  // Get recorded audio as blob
-  const getRecordedAudio = useCallback(() => {
-    if (state.recordedChunks.length === 0) return null;
+  const getRecordedAudio = useCallback(() => null, []);
 
-    return new Blob(state.recordedChunks, { type: mimeType });
-  }, [state.recordedChunks, mimeType]);
-
-  // Cleanup on unmount
   useEffect(() => {
     return () => {
-      if (state.isRecording) {
-        stopRecording();
-      }
+      void stopRecording();
     };
-  }, [state.isRecording, stopRecording]);
+  }, [stopRecording]);
 
   return {
     ...state,

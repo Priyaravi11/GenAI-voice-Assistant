@@ -916,6 +916,14 @@ button,input,select{font:inherit;border:1px solid var(--line);color:var(--text);
   margin-top: 2px;
 }
 
+.error-inline {
+  position: relative;
+  z-index: 2;
+  color: #b42318;
+  font-size: 0.9rem;
+  line-height: 1.45;
+}
+
 .transcription-panel {
   display: grid;
   grid-template-rows: auto 1fr auto;

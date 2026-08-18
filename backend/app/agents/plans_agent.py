@@ -6,6 +6,7 @@ from typing import Any, Dict, Optional
 # ============================================================
 
 from tools.plans_tool import (
+    get_available_plans,
     get_current_plan,
     get_plan_details,
     compare_plans,

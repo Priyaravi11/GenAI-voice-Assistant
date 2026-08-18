@@ -157,6 +157,7 @@ class SessionContext:
         agent: str,
         query: str,
         tool_name: Optional[str] = None,
+        tool: Optional[str] = None,
         nlu_data: Optional[Dict[str, Any]] = None,
     ) -> None:
         """
@@ -169,13 +170,14 @@ class SessionContext:
             agent: Agent name (e.g., "billing")
             query: Original customer query to resume
             tool_name: Tool that requires the customer ID
+            tool: Backward-compatible alias for tool_name
             nlu_data: NLU data to pass when resuming
         """
 
         self.waiting_for_customer_id = True
         self.pending_agent = agent
         self.pending_query = query
-        self.pending_tool = tool_name
+        self.pending_tool = tool_name or tool
         self.pending_nlu_data = nlu_data
         self.updated_at = datetime.now(timezone.utc)
 
@@ -192,11 +194,22 @@ class SessionContext:
         if not self.waiting_for_customer_id:
             return None
 
+        return self.get_pending_customer_id_request()
+
+    def get_pending_customer_id_request(
+        self,
+    ) -> Dict[str, Any]:
+        """
+        Retrieve the pending Customer-ID request using the orchestrator
+        contract.
+        """
+
         return {
-            "pending_agent": self.pending_agent,
-            "pending_query": self.pending_query,
-            "pending_tool": self.pending_tool,
-            "pending_nlu_data": self.pending_nlu_data,
+            "waiting_for_customer_id": self.waiting_for_customer_id,
+            "agent": self.pending_agent,
+            "query": self.pending_query,
+            "tool": self.pending_tool,
+            "nlu_data": self.pending_nlu_data,
         }
 
     def clear_pending_customer_id_request(
