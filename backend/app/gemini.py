@@ -183,9 +183,6 @@ async def generate_text(prompt: str) -> str:
     if not prompt or not prompt.strip():
         raise ValueError("Prompt cannot be empty")
 
-    if client is None:
-        raise RuntimeError("GEMINI_API_KEY not found in environment variables")
-
     if len(prompt) > 100000:
         raise ValueError("Prompt exceeds maximum length (100k chars)")
 
@@ -194,37 +191,43 @@ async def generate_text(prompt: str) -> str:
     last_exception = None
     quota_exhausted = False
 
-    for model_name in models_to_try:
-        for attempt in range(3):
-            try:
-                response = await client.aio.models.generate_content(
-                    model=model_name,
-                    contents=prompt,
-                )
-
-                if response and response.text:
-                    return response.text
-
-            except Exception as e:
-                last_exception = e
-                if _is_quota_error(e):
-                    logger.warning(
-                        f"Gemini quota exhausted for model {model_name}; "
-                        "switching to fallback provider."
+    if client is not None:
+        for model_name in models_to_try:
+            for attempt in range(3):
+                try:
+                    response = await client.aio.models.generate_content(
+                        model=model_name,
+                        contents=prompt,
                     )
-                    quota_exhausted = True
+
+                    if response and response.text:
+                        return response.text
+
+                except Exception as e:
+                    last_exception = e
+                    if _is_quota_error(e):
+                        logger.warning(
+                            f"Gemini quota exhausted for model {model_name}; "
+                            "switching to fallback provider."
+                        )
+                        quota_exhausted = True
+                        break
+
+                    if _is_retryable_error(e):
+                        import asyncio
+                        await asyncio.sleep(1.0 * (attempt + 1))
+                        continue
+
+                    # For non-retryable errors, switch model immediately
                     break
 
-                if _is_retryable_error(e):
-                    import asyncio
-                    await asyncio.sleep(1.0 * (attempt + 1))
-                    continue
-
-                # For non-retryable errors, switch model immediately
+            if quota_exhausted:
                 break
-
-        if quota_exhausted:
-            break
+    else:
+        last_exception = RuntimeError(
+            "GEMINI_API_KEY not found in environment variables"
+        )
+        logger.warning("Gemini client is not configured; using fallback provider.")
 
     # Attempt Mantle fallback if Gemini models fail
     try:

@@ -511,10 +511,70 @@ Give only the final customer-facing answer.
                 exc,
             )
 
-        return (
-            "I'm sorry, I couldn't generate a payment "
-            "response right now."
+        return self._build_fallback_response(
+            query=query,
+            payment_data=payment_data,
         )
+
+    # ==========================================================
+    # FALLBACK RESPONSE
+    # ==========================================================
+
+    @staticmethod
+    def _build_fallback_response(
+        query: str,
+        payment_data: Any,
+    ) -> str:
+        if isinstance(payment_data, dict):
+            if payment_data.get("requires_customer_id"):
+                return "Please provide your customer ID so I can check your payment details."
+
+            if not payment_data.get("success", False):
+                return (
+                    payment_data.get("message")
+                    or "I could not find payment information for that customer."
+                )
+
+            data = payment_data.get("data")
+
+            if isinstance(data, list):
+                return f"I found {len(data)} payment record(s) for your account."
+
+            if isinstance(data, dict):
+                amount = data.get("amount") or data.get("payment_amount")
+                status = data.get("status") or payment_data.get("status")
+                payment_date = data.get("payment_date") or data.get("date")
+                transaction_id = (
+                    data.get("transaction_id")
+                    or data.get("payment_id")
+                    or data.get("txn_id")
+                )
+                failure_reason = data.get("failure_reason") or data.get("reason")
+
+                details = []
+                if amount is not None:
+                    details.append(f"amount is {amount}")
+                if status:
+                    details.append(f"status is {status}")
+                if payment_date:
+                    details.append(f"date is {payment_date}")
+                if failure_reason:
+                    details.append(f"reason is {failure_reason}")
+
+                if details:
+                    prefix = (
+                        f"For transaction {transaction_id}, the "
+                        if transaction_id
+                        else "Your latest payment "
+                    )
+                    return prefix + ", ".join(details) + "."
+
+            return payment_data.get("message", "Payment information retrieved successfully.")
+
+        if "payment" in query.lower() or "paid" in query.lower():
+            return "I can help with payments, but I need a valid customer ID to look up account-specific payment details."
+
+        return "I can help with payment status, history, failed payments, and latest payment details."
 
     # ==========================================================
     # ERROR RESPONSE

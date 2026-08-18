@@ -15,7 +15,16 @@ def get_logger(name: str) -> logging.Logger:
     Return a logger for the given module.
     """
     # Silence verbose 3rd party loggers
-    for verbose_logger in ("httpcore", "httpx", "huggingface_hub", "sentence_transformers", "urllib3", "pymongo"):
+    for verbose_logger in (
+        "httpcore",
+        "httpx",
+        "huggingface_hub",
+        "sentence_transformers",
+        "urllib3",
+        "pymongo",
+        "google_genai",
+        "google_genai.models",
+    ):
         logging.getLogger(verbose_logger).setLevel(logging.WARNING)
 
     return logging.getLogger(name)

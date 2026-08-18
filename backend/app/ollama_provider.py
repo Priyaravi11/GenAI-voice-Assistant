@@ -124,13 +124,13 @@ class MantleProvider:
                         .get("content", "")
                     )
 
-                logger.error(
-                    f"Mantle generation failed ({response.status_code}): "
-                    f"{response.text}"
+                logger.debug(
+                    "Mantle generation failed with status %s",
+                    response.status_code,
                 )
                 return None
         except Exception as e:
-            logger.error(f"Mantle generation error: {str(e)}")
+            logger.debug(f"Mantle generation error: {str(e)}")
             return None
 
 mantle_provider = MantleProvider()

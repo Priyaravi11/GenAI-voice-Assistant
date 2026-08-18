@@ -1,5 +1,7 @@
 from typing import Any, Dict, Optional
 
+from backend.app.gemini import generate_text
+
 
 # ============================================================
 # NETWORK TOOLS
@@ -12,6 +14,7 @@ from tools.network_tool import (
     check_area_service,
     get_network_details,
 )
+from tools.customer_tool import get_customer_area
 
 
 class TechnicalAgent:
@@ -95,6 +98,11 @@ class TechnicalAgent:
 
         if not area:
             area = self._extract_area(query)
+
+        if not area and customer_id:
+            area = self._get_customer_area(customer_id)
+            if area:
+                context["area"] = area
 
         # ----------------------------------------------------
         # Decide whether query needs RAG
@@ -383,13 +391,31 @@ class TechnicalAgent:
         extracted area.
         """
 
-        # ----------------------------------------------------
-        # No automatic guessing of arbitrary locations.
-        # ----------------------------------------------------
-        #
-        # Returning None is safer than sending an incorrect
-        # location to the Network Tool.
-        #
+        text = query.strip()
+        lowered = text.lower()
+
+        for marker in (" in ", " at ", " area ", " near "):
+            if marker in lowered:
+                candidate = text[lowered.rfind(marker) + len(marker):].strip()
+                if candidate:
+                    return candidate.strip(" .,?!")
+
+        return None
+
+    @staticmethod
+    def _get_customer_area(
+        customer_id: str,
+    ) -> Optional[str]:
+        result = get_customer_area(customer_id)
+
+        if not result.get("success"):
+            return None
+
+        data = result.get("data")
+        if isinstance(data, dict):
+            area = data.get("area")
+            if area:
+                return str(area)
 
         return None
 
@@ -569,6 +595,22 @@ class TechnicalAgent:
 
             except Exception:
                 pass
+
+        try:
+            prompt = self._build_prompt(
+                query=query,
+                language=language,
+                rag_context=rag_context,
+                tool_data=tool_data,
+            )
+
+            result = await generate_text(prompt)
+
+            if result and result.strip():
+                return result.strip()
+
+        except Exception:
+            pass
 
         # ----------------------------------------------------
         # Fallback response

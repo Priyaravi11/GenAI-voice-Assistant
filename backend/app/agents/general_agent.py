@@ -101,11 +101,35 @@ class GeneralAgent:
 
         except Exception:
 
+            return self._build_fallback_response(query)
+
+    # ==========================================================
+    # FALLBACK
+    # ==========================================================
+
+    @staticmethod
+    def _build_fallback_response(query: str) -> str:
+        text = query.lower().strip()
+
+        if any(word in text for word in ("hi", "hello", "hey", "vanakkam", "namaste")):
+            return "Hello. I can help with billing, payments, plans, network issues, and account support."
+
+        if any(word in text for word in ("thank", "thanks")):
+            return "You're welcome. Is there anything else I can help you with?"
+
+        if any(word in text for word in ("bye", "goodbye", "exit")):
+            return "Thank you for contacting support. Have a good day."
+
+        if "help" in text or "what can you" in text:
             return (
-                "I'm sorry, I couldn't process "
-                "your request right now. "
-                "Please try again."
+                "I can help with current bills, payment status, plan details, "
+                "network problems, and escalation to a human agent."
             )
+
+        return (
+            "I can help with telecom support. Please ask about billing, "
+            "payments, plans, or network issues."
+        )
 
     # ==========================================================
     # PROMPT

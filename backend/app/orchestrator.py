@@ -57,6 +57,14 @@ from backend.app.agents.plans_agent import PlansAgent
 from backend.app.agents.payment_agent import PaymentAgent
 from backend.app.agents.technical_agent import TechnicalAgent
 from backend.app.agents.general_agent import GeneralAgent
+from tools.customer_tool import (
+    get_customer_account,
+    get_customer_profile,
+    get_customer_service,
+    get_customer_usage,
+    get_customer_area,
+    get_customer_plan,
+)
 
 logger = get_logger(__name__)
 # Import RAG Service if available
@@ -186,6 +194,14 @@ class Orchestrator:
                 context=context,
             )
 
+        if context.get_data().get("waiting_for_area"):
+            return await self._handle_area_input(
+                session_id=session_id,
+                area_input=query,
+                language=language,
+                context=context,
+            )
+
         # ================================================================
         # STORE USER MESSAGE
         # ================================================================
@@ -200,6 +216,14 @@ class Orchestrator:
         # ================================================================
 
         agent_context = self._build_agent_context(context)
+
+        if self._is_customer_details_query(query):
+            return await self._handle_customer_details_query(
+                session_id=session_id,
+                query=query,
+                language=language,
+                context=context,
+            )
 
         # ================================================================
         # SUPERVISOR CLASSIFICATION
@@ -312,6 +336,45 @@ class Orchestrator:
                 "escalation_reason": None,
             }
 
+        tool_result = agent_result.get("tool_result")
+
+        if (
+            agent_name == "technical"
+            and isinstance(tool_result, dict)
+            and not tool_result.get("success", False)
+            and "area is required" in str(tool_result.get("message", "")).lower()
+        ):
+            context.update(
+                waiting_for_area=True,
+                pending_area_query=query,
+            )
+            response_text = (
+                "Please tell me your area or city so I can check the network status."
+            )
+            context.add_message(
+                role="assistant",
+                content=response_text,
+                agent=agent_name,
+            )
+            return {
+                "session_id": session_id,
+                "customer_id": context.customer_id,
+                "language": language,
+                "agent": agent_name,
+                "confidence": 1.0,
+                "reason": "Waiting for service area",
+                "method": "pending_area",
+                "used_rag": bool(agent_result.get("rag_context")),
+                "used_tool": False,
+                "tool_name": agent_result.get("tool_used"),
+                "rag_context": agent_result.get("rag_context", {}),
+                "tool_data": tool_result,
+                "response": response_text,
+                "requires_customer_id": False,
+                "escalated": False,
+                "escalation_reason": None,
+            }
+
         # ================================================================
         # NORMAL FLOW: Extract agent outputs
         # ================================================================
@@ -336,7 +399,6 @@ class Orchestrator:
         # ================================================================
 
         agent_confidence = agent_result.get("confidence", 0.5)
-        tool_result = agent_result.get("tool_result")
 
         escalation_required = self._should_escalate(
             confidence=agent_confidence,
@@ -391,6 +453,157 @@ class Orchestrator:
             query=customer_query,
             session_id=session_id,
             customer_id=customer_id,
+            language=language,
+        )
+
+    # ====================================================================
+    # CUSTOMER DETAILS
+    # ====================================================================
+
+    @staticmethod
+    def _is_customer_details_query(query: str) -> bool:
+        text = query.lower()
+        return (
+            "customer detail" in text
+            or "customer details" in text
+            or "my details" in text
+            or "my profile" in text
+            or "my account" in text
+            or "account details" in text
+        )
+
+    async def _handle_customer_details_query(
+        self,
+        session_id: str,
+        query: str,
+        language: str,
+        context: Any,
+    ) -> Dict[str, Any]:
+        customer_id = context.customer_id
+
+        if not customer_id:
+            context.set_pending_customer_id_request(
+                agent="general",
+                query=query,
+                tool="get_customer_profile",
+            )
+            response_text = "Please provide your customer ID so I can retrieve your customer details."
+            context.add_message(role="assistant", content=response_text)
+            return {
+                "session_id": session_id,
+                "customer_id": None,
+                "language": language,
+                "agent": "general",
+                "confidence": 1.0,
+                "reason": "Waiting for Customer ID",
+                "method": "pending_customer_id",
+                "used_rag": False,
+                "used_tool": False,
+                "tool_name": "get_customer_profile",
+                "rag_context": {},
+                "tool_data": None,
+                "response": response_text,
+                "requires_customer_id": True,
+                "escalated": False,
+                "escalation_reason": None,
+            }
+
+        tool_results = {
+            "profile": get_customer_profile(customer_id),
+            "account": get_customer_account(customer_id),
+            "service": get_customer_service(customer_id),
+            "plan": get_customer_plan(customer_id),
+            "area": get_customer_area(customer_id),
+            "usage": get_customer_usage(customer_id),
+        }
+
+        response_text = self._format_customer_details(customer_id, tool_results)
+        context.add_message(role="assistant", content=response_text, agent="general")
+
+        return {
+            "session_id": session_id,
+            "customer_id": customer_id,
+            "language": language,
+            "agent": "general",
+            "confidence": 0.95,
+            "reason": "Customer details retrieved",
+            "method": "customer_tool",
+            "used_rag": False,
+            "used_tool": True,
+            "tool_name": "customer_details",
+            "rag_context": {},
+            "tool_data": tool_results,
+            "response": response_text,
+            "requires_customer_id": False,
+            "escalated": False,
+            "escalation_reason": None,
+        }
+
+    @staticmethod
+    def _format_customer_details(
+        customer_id: str,
+        tool_results: Dict[str, Any],
+    ) -> str:
+        profile = tool_results.get("profile", {}).get("data") or {}
+        account = tool_results.get("account", {}).get("data") or {}
+        plan = tool_results.get("plan", {}).get("data") or {}
+        area = (tool_results.get("area", {}).get("data") or {}).get("area")
+        service_data = tool_results.get("service", {}).get("data") or []
+        usage_data = tool_results.get("usage", {}).get("data") or []
+
+        name = (
+            profile.get("name")
+            or profile.get("customer_name")
+            or account.get("name")
+            or account.get("customer_name")
+            or "the customer"
+        )
+        account_id = account.get("account_id") or account.get("acct_id")
+        plan_name = plan.get("plan_name") or plan.get("name")
+        status = account.get("status") or account.get("account_status")
+
+        details = [f"Customer {customer_id}: {name}."]
+        if account_id:
+            details.append(f"Account ID: {account_id}.")
+        if status:
+            details.append(f"Account status: {status}.")
+        if plan_name:
+            details.append(f"Current plan: {plan_name}.")
+        if area:
+            details.append(f"Service area: {area}.")
+        if isinstance(service_data, list) and service_data:
+            details.append(f"Active service records: {len(service_data)}.")
+        if isinstance(usage_data, list) and usage_data:
+            details.append(f"Usage records found: {len(usage_data)}.")
+
+        if len(details) == 1:
+            messages = [
+                result.get("message")
+                for result in tool_results.values()
+                if isinstance(result, dict) and result.get("message")
+            ]
+            return messages[0] if messages else f"No customer details found for customer {customer_id}."
+
+        return " ".join(details)
+
+    async def _handle_area_input(
+        self,
+        session_id: str,
+        area_input: str,
+        language: str,
+        context: Any,
+    ) -> Dict[str, Any]:
+        area = area_input.strip(" .,?!")
+        pending_query = context.get_data().get("pending_area_query") or "network status"
+
+        context.update(area=area)
+        context.data.pop("waiting_for_area", None)
+        context.data.pop("pending_area_query", None)
+
+        return await self.handle(
+            query=pending_query,
+            session_id=session_id,
+            customer_id=context.customer_id,
             language=language,
         )
 
@@ -494,6 +707,17 @@ class Orchestrator:
         pending_agent = pending_request.get("agent")
         pending_query = pending_request.get("query")
         pending_tool = pending_request.get("tool")
+
+        if pending_tool == "get_customer_profile" or self._is_customer_details_query(
+            pending_query or ""
+        ):
+            context.clear_pending_customer_id_request()
+            return await self._handle_customer_details_query(
+                session_id=session_id,
+                query=pending_query or "get my customer details",
+                language=language,
+                context=context,
+            )
 
         logger.info(
             f"Resuming pending {pending_agent} request "
@@ -653,7 +877,24 @@ class Orchestrator:
 
         # Tool failure
         if tool_result and not tool_result.get("success", False):
-            return True
+            if tool_result.get("error"):
+                return True
+
+            message = str(tool_result.get("message", "")).lower()
+            expected_lookup_messages = (
+                "no billing record",
+                "no billing history",
+                "no payment record",
+                "no payment history",
+                "no network information",
+                "area is required",
+                "please provide",
+                "not available",
+            )
+            return not any(
+                expected in message
+                for expected in expected_lookup_messages
+            )
 
         # Customer requests escalation
         escalation_keywords = [
