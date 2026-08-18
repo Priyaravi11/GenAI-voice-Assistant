@@ -36,11 +36,13 @@ class GeneralAgent:
 
             return {
                 "agent": "general",
-                "used_rag": False,
-                "used_tool": False,
-                "response": (
-                    "How can I help you today?"
-                ),
+                "response": "How can I help you today?",
+                "success": True,
+                "confidence": 1.0,
+                "tool_used": None,
+                "tool_result": None,
+                "rag_context": None,
+                "requires_customer_id": False,
             }
 
         language = context.get(
@@ -56,11 +58,13 @@ class GeneralAgent:
 
         return {
             "agent": "general",
-            "used_rag": False,
-            "used_tool": False,
-            "rag_context": [],
-            "tool_data": None,
             "response": response,
+            "success": True,
+            "confidence": 0.95,
+            "tool_used": None,
+            "tool_result": None,
+            "rag_context": None,
+            "requires_customer_id": False,
         }
 
     # ==========================================================

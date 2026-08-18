@@ -35,7 +35,7 @@ export function useAudioWebSocket(
   });
 
   const socketRef = useRef<WebSocket | null>(null);
-  const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Connect to WebSocket
   const connect = useCallback(() => {

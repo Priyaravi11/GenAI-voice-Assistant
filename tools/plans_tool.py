@@ -18,6 +18,125 @@ if str(PROJECT_ROOT) not in sys.path:
 from backend.app.database import plans_collection
 
 
+def _get_plans_document():
+    return plans_collection.find_one(
+        {},
+        {
+            "_id": 0,
+            "plans": 1
+        }
+    )
+
+
+def get_available_plans():
+    """
+    Retrieve all available telecom plans.
+    """
+
+    try:
+        document = _get_plans_document()
+
+        if document is None:
+            return {
+                "success": False,
+                "message": "Plan database is empty"
+            }
+
+        plans = document.get("plans", [])
+
+        return {
+            "success": True,
+            "message": "Available plans retrieved successfully",
+            "count": len(plans),
+            "data": plans
+        }
+
+    except Exception as e:
+        return {
+            "success": False,
+            "message": "Failed to retrieve available plans",
+            "error": str(e)
+        }
+
+
+def get_current_plan(cust_id: str):
+    """
+    Retrieve the customer's current plan from their latest billing record.
+    """
+
+    try:
+        from backend.app.database import billing_collection
+
+        billing_document = billing_collection.find_one(
+            {
+                "bills": {
+                    "$elemMatch": {
+                        "cust_id": cust_id
+                    }
+                }
+            },
+            {
+                "_id": 0,
+                "bills": 1
+            }
+        )
+
+        if billing_document is None:
+            return {
+                "success": False,
+                "customer_id": cust_id,
+                "message": f"No billing record found for customer {cust_id}"
+            }
+
+        customer_bills = [
+            bill
+            for bill in billing_document.get("bills", [])
+            if bill.get("cust_id") == cust_id
+        ]
+
+        if not customer_bills:
+            return {
+                "success": False,
+                "customer_id": cust_id,
+                "message": f"No billing record found for customer {cust_id}"
+            }
+
+        customer_bills.sort(
+            key=lambda bill: bill.get("bill_date", ""),
+            reverse=True
+        )
+
+        current_plan_id = customer_bills[0].get("plan_id")
+
+        if not current_plan_id:
+            return {
+                "success": False,
+                "customer_id": cust_id,
+                "message": "Current plan information is not available"
+            }
+
+        plan_result = get_plan_details(current_plan_id)
+
+        if not plan_result.get("success"):
+            return plan_result
+
+        return {
+            "success": True,
+            "customer_id": cust_id,
+            "plan_id": current_plan_id,
+            "message": "Current plan retrieved successfully",
+            "data": plan_result.get("data")
+        }
+
+    except Exception as e:
+        return {
+            "success": False,
+            "customer_id": cust_id,
+            "message": "Failed to retrieve current plan",
+            "error": str(e)
+        }
+
+
 # ============================================================
 # PLAN TOOL 1
 # Get Plan Details

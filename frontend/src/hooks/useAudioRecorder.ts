@@ -44,7 +44,7 @@ export function useAudioRecorder(options: UseAudioRecorderOptions = {}) {
   const streamRef = useRef<MediaStream | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
   const analyzerRef = useRef<AnalyserNode | null>(null);
-  const volumeCheckIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const volumeCheckIntervalRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Request microphone access
   const startRecording = useCallback(async () => {

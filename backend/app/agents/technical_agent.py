@@ -166,12 +166,13 @@ class TechnicalAgent:
 
         return {
             "agent": "technical",
-            "used_rag": bool(rag_context),
-            "used_tool": tool_data is not None,
-            "tool_name": tool_name,
-            "rag_context": rag_context,
-            "tool_data": tool_data,
             "response": response_text,
+            "success": True,
+            "confidence": 0.90,
+            "tool_used": tool_name,
+            "tool_result": tool_data,
+            "rag_context": rag_context,
+            "requires_customer_id": False,
         }
 
     # ========================================================

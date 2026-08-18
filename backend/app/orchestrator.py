@@ -1,61 +1,57 @@
 """
-Orchestrator
-File: backend/app/orchestrator.py
+Orchestrator (Improved)
+File: backend/app/orchestrator_improved.py
 
-Coordinates the main processing flow of the multilingual GenAI voice assistant.
+Central orchestration layer for the multilingual GenAI Telecom Voice Assistant.
 
 Responsibilities:
-1. Accept customer queries and context
-2. Route to specialized agents (via Supervisor)
-3. Coordinate RAG retrieval and tool execution
-4. Call Gemini for response generation
-5. Validate confidence levels
-6. Handle escalation to human agents
-7. Maintain conversation history and context
+1. Create/retrieve conversation sessions
+2. Maintain SessionContext
+3. Pass customer_id and language to agents
+4. Send customer's query to SupervisorAgent
+5. Route query to correct specialized agent
+6. Handle pending Customer-ID requests
+7. Store conversation history
+8. Return standardized response structure
 
 Flow:
-
-Customer Query
-    ↓
-Validation
-    ↓
-Session Context
-    ↓
-SupervisorAgent (classify request)
-    ├─→ BillingAgent
-    ├─→ PlansAgent
-    ├─→ PaymentAgent
-    ├─→ TechnicalAgent
-    └─→ GeneralAgent
-    ↓
-RAG Retrieval (if needed)
-    ↓
-Tool Execution (if needed)
-    ↓
-Gemini Response Generation
-    ↓
-Confidence Evaluation
-    ↓
-Escalation Check
-    ↓
-Response
+    User Query
+        ↓
+    Validate Input
+        ↓
+    Get/Create Session
+        ↓
+    Check Pending Customer-ID Request
+        ├─ (if waiting) Handle Customer ID Input
+        └─ (if not) Normal Flow
+        ↓
+    SupervisorAgent Classification
+        ↓
+    Specialized Agent Execution
+        ↓
+    Check requires_customer_id Signal
+        ├─ (if true) Store Pending State & Ask for ID
+        └─ (if false) Continue
+        ↓
+    Generate Response
+        ↓
+    Escalation Check
+        ↓
+    Return Response
 """
 
-import logging
 from typing import Any, Dict, Optional
+import logging
 
-from backend.app.context import get_or_create_session
-from backend.app.gemini import generate_text
-from backend.app.rag import retrieve_context
-from backend.app.validation import (
-    validate_customer_query,
-    validate_language,
-    validate_session_id,
-)
+from backend.app.context import get_or_create_session, get_session
+from backend.app.customer_validation import validate_customer_id
 from backend.app.logger import get_logger
+from backend.app import tools as tool_registry
 
-# Import agents
+# Import Supervisor
 from backend.app.agents.supervisor_agent import SupervisorAgent
+
+# Import Specialized Agents
 from backend.app.agents.billing_agent import BillingAgent
 from backend.app.agents.plans_agent import PlansAgent
 from backend.app.agents.payment_agent import PaymentAgent
@@ -63,132 +59,95 @@ from backend.app.agents.technical_agent import TechnicalAgent
 from backend.app.agents.general_agent import GeneralAgent
 
 logger = get_logger(__name__)
+rag_service = None
 
-
-# ============================================================
-# Agent Registry
-# ============================================================
 
 class Orchestrator:
     """
-    Coordinates the main processing flow of the
-    multilingual GenAI voice assistant.
+    Central orchestration layer for the multilingual GenAI voice assistant.
     """
 
     def __init__(self):
+        """Initialize orchestrator with supervisor and specialized agents."""
+        
         self.supervisor = SupervisorAgent()
         self.logger = logger
-        
-        # Initialize agents lazily to avoid circular dependencies
+
+        # Initialize agents
         self.agents = {
             "general": GeneralAgent(),
-            # Other agents initialized on first use
+            "billing": BillingAgent(),
+            "plans": PlansAgent(
+                rag=rag_service,
+                tools=tool_registry,
+                gemini=None,
+            ),
+            "payment": PaymentAgent(),
+            "technical": TechnicalAgent(
+                rag=rag_service,
+                tools=tool_registry,
+                gemini=None,
+            ),
         }
 
-    def _get_agent(self, agent_name: str):
-        """Get or lazily initialize an agent."""
-        
-        if agent_name in self.agents:
-            return self.agents[agent_name]
-        
-        # Lazy initialization of specialized agents with dependencies
-        if agent_name == "billing":
-            from backend.app.rag import rag_service
-            from backend.app import tools
-            agent = BillingAgent(rag=rag_service, tools=tools, gemini=generate_text)
-        elif agent_name == "plans":
-            from backend.app.rag import rag_service
-            from backend.app import tools
-            agent = PlansAgent(rag=rag_service, tools=tools, gemini=generate_text)
-        elif agent_name == "payment":
-            from backend.app.rag import rag_service
-            from backend.app import tools
-            agent = PaymentAgent(rag=rag_service, tools=tools, gemini=generate_text)
-        elif agent_name == "technical":
-            from backend.app.rag import rag_service
-            from backend.app import tools
-            agent = TechnicalAgent(rag=rag_service, tools=tools, gemini=generate_text)
-        else:
-            agent = GeneralAgent()
-        
-        self.agents[agent_name] = agent
-        return agent
-
-    # ========================================================
+    # ====================================================================
     # MAIN ENTRY POINT
-    # ========================================================
+    # ====================================================================
 
-    async def process_text(
+    async def handle(
         self,
+        query: str,
         session_id: str,
-        customer_query: str,
-        language: str = "en",
         customer_id: Optional[str] = None,
-        nlu_data: Optional[Dict[str, Any]] = None,
+        language: str = "en",
     ) -> Dict[str, Any]:
         """
-        Process a customer text request end-to-end.
+        Process one customer request end-to-end.
 
-        Flow:
-            Customer Query
-                ↓
-            Validation
-                ↓
-            Session Context
-                ↓
-            SupervisorAgent (classification)
-                ↓
-            Specialized Agent (handling)
-                ↓
-            RAG + Tool Execution
-                ↓
-            Gemini Response
-                ↓
-            Confidence Evaluation
-                ↓
-            Escalation Check
-                ↓
-            Response
+        Args:
+            query: Customer's current message.
+            session_id: Unique conversation/session ID.
+            customer_id: Customer ID if already known.
+            language: Customer language code (e.g., "en", "ta", "hi").
 
         Returns:
-            {
-                "session_id": "...",
-                "language": "en",
-                "response": "Your response here...",
-                "confidence": 0.95,
-                "intent": "billing",
-                "escalated": False,
-                "rag_context": {...},
-                "tool_result": {...},
-                "escalation_reason": None,
-            }
+            Standard orchestrator response with:
+            - response: Main response text
+            - confidence: Confidence level (0.0-1.0)
+            - agent: Which agent handled it
+            - intent: Classified intent
+            - requires_customer_id: Whether customer ID is needed
+            - escalated: Whether escalation triggered
+            - tool_result: Any tool output
+            - rag_context: Any RAG context
         """
 
-        # ====================================================
+        # ================================================================
         # VALIDATE INPUT
-        # ====================================================
+        # ================================================================
 
-        try:
-            session_id = validate_session_id(session_id)
-            customer_query = validate_customer_query(customer_query)
-            language = validate_language(language)
-        except ValueError as e:
-            logger.error(f"Validation error: {str(e)}")
-            return {
-                "session_id": session_id,
-                "language": language,
-                "response": "Invalid request parameters.",
-                "confidence": 0.0,
-                "intent": "error",
-                "escalated": False,
-                "rag_context": None,
-                "tool_result": None,
-                "escalation_reason": "Invalid input",
-            }
+        if not session_id or not isinstance(session_id, str):
+            logger.error("Invalid session ID")
+            return self._error_response("Invalid session ID.")
 
-        # ====================================================
+        if not isinstance(query, str):
+            logger.error("Invalid query type")
+            return self._error_response("Invalid query type.")
+
+        query = query.strip()
+
+        if not query:
+            logger.error("Empty query")
+            return self._error_response("Please provide a message.")
+
+        if not isinstance(language, str):
+            language = "en"
+
+        language = language.lower().strip()
+
+        # ================================================================
         # GET OR CREATE SESSION
-        # ====================================================
+        # ================================================================
 
         context = get_or_create_session(
             session_id=session_id,
@@ -196,250 +155,490 @@ class Orchestrator:
             language=language,
         )
 
-        # Store customer message
-        context.add_message(
-            role="customer",
-            content=customer_query,
-            language=language,
-        )
-
         logger.info(
-            f"Processing query: session={session_id}, language={language}, "
-            f"query_len={len(customer_query)}"
+            f"Processing: session={session_id} | "
+            f"language={language} | query_len={len(query)}"
         )
 
-        # ====================================================
-        # PREPARE NLU DATA
-        # ====================================================
+        # ================================================================
+        # CHECK FOR PENDING CUSTOMER-ID REQUEST
+        # ================================================================
+        # CRITICAL: If waiting for Customer ID, don't classify with
+        # Supervisor. Use current message as Customer ID input.
+        # ================================================================
 
-        if nlu_data is None:
-            nlu_data = {
-                "request_id": session_id,
-                "language": {
-                    "primary": language,
-                    "code_switched": False,
-                },
-                "intent": {
-                    "name": "general_query",
-                },
-                "entities": {},
-                "sentiment": {
-                    "label": "neutral",
-                },
-                "customer_query": customer_query,
-            }
+        if context.waiting_for_customer_id:
+            logger.info(
+                f"Session {session_id} waiting for Customer ID. "
+                f"Processing message as ID input."
+            )
 
-        # ====================================================
-        # CLASSIFY WITH SUPERVISOR
-        # ====================================================
+            return await self._handle_customer_id_input(
+                session_id=session_id,
+                customer_id_input=query,
+                language=language,
+                context=context,
+            )
+
+        # ================================================================
+        # STORE USER MESSAGE
+        # ================================================================
+
+        context.add_message(
+            role="user",
+            content=query,
+        )
+
+        # ================================================================
+        # BUILD AGENT CONTEXT
+        # ================================================================
+
+        agent_context = self._build_agent_context(context)
+
+        # ================================================================
+        # SUPERVISOR CLASSIFICATION
+        # ================================================================
 
         logger.info("Running Supervisor classification...")
 
         supervisor_result = await self.supervisor.handle(
-            query=customer_query,
-            context={
-                "session_id": session_id,
-                "language": language,
-                "customer_id": customer_id,
-            },
+            query=query,
+            context=agent_context,
         )
 
-        agent_name = supervisor_result.get("agent", "general")
+        agent_name = supervisor_result.get("agent", "general").lower()
         supervisor_confidence = supervisor_result.get("confidence", 0.0)
-        supervisor_method = supervisor_result.get("method", "fallback")
+
+        # Safety check
+        if agent_name not in self.agents:
+            agent_name = "general"
 
         logger.info(
             f"Supervisor routed to: {agent_name} "
-            f"(confidence: {supervisor_confidence}, method: {supervisor_method})"
+            f"(confidence: {supervisor_confidence})"
         )
 
-        # ====================================================
+        # ================================================================
         # GET SPECIALIZED AGENT
-        # ====================================================
+        # ================================================================
 
-        agent = self._get_agent(agent_name)
+        agent = self.agents.get(agent_name)
 
-        # ====================================================
-        # DELEGATE TO AGENT
-        # ====================================================
+        if agent is None:
+            logger.error(f"Agent not found: {agent_name}")
+            return self._error_response(
+                "Unable to find the appropriate assistant."
+            )
+
+        # ================================================================
+        # EXECUTE SPECIALIZED AGENT
+        # ================================================================
 
         logger.info(f"Delegating to {agent.__class__.__name__}...")
 
-        agent_result = await agent.handle(
-            query=customer_query,
-            language=language,
-            customer_id=customer_id,
-            session_id=session_id,
-            nlu_data=nlu_data,
-        )
-
-        # Extract agent outputs
-        rag_context = agent_result.get("rag_context", {})
-        tool_result = agent_result.get("tool_result", None)
-        agent_confidence = agent_result.get("confidence", 0.5)
-
-        # ====================================================
-        # BUILD GEMINI PROMPT
-        # ====================================================
-
-        logger.info("Building Gemini prompt...")
-
-        prompt = self._build_prompt(
-            customer_query=customer_query,
-            language=language,
-            agent_name=agent_name,
-            rag_result=rag_context,
-            tool_result=tool_result,
-            context=context,
-        )
-
-        # ====================================================
-        # GENERATE RESPONSE WITH GEMINI
-        # ====================================================
-
-        logger.info("Generating response with Gemini...")
-
         try:
-            response = await generate_text(prompt)
-        except Exception as e:
-            logger.error(f"Gemini generation failed: {str(e)}")
-            response = (
-                "I apologize, but I'm unable to process your request at the moment. "
-                "Please try again or contact our support team."
+            agent_result = await agent.handle(
+                query=query,
+                context=agent_context,
             )
-            agent_confidence = 0.0
 
-        # Store assistant response
+        except Exception as exc:
+            logger.exception(f"Agent execution failed: {str(exc)}")
+
+            context.add_message(
+                role="system",
+                content=f"{agent_name} agent execution failed.",
+                error=str(exc),
+            )
+
+            return self._error_response(
+                "I'm sorry, I couldn't process your request right now."
+            )
+
+        # ================================================================
+        # CHECK FOR REQUIRES_CUSTOMER_ID SIGNAL
+        # ================================================================
+        # If agent returns requires_customer_id=True, store pending
+        # state and ask for Customer ID instead of continuing.
+        # ================================================================
+
+        if agent_result.get("requires_customer_id", False):
+            logger.info(
+                f"Agent {agent_name} requires Customer ID. "
+                f"Storing pending state."
+            )
+
+            tool_name = agent_result.get("tool_used")
+            response_text = agent_result.get(
+                "response",
+                "Please provide your customer ID.",
+            )
+
+            # Store pending request
+            context.set_pending_customer_id_request(
+                agent=agent_name,
+                query=query,
+                tool=tool_name,
+            )
+
+            # Store assistant message
+            context.add_message(
+                role="assistant",
+                content=response_text,
+            )
+
+            return {
+                "session_id": session_id,
+                "customer_id": context.customer_id,
+                "language": language,
+                "agent": agent_name,
+                "confidence": 1.0,
+                "reason": "Waiting for Customer ID",
+                "method": "pending_customer_id",
+                "used_rag": False,
+                "used_tool": False,
+                "tool_name": tool_name,
+                "rag_context": {},
+                "tool_data": None,
+                "response": response_text,
+                "requires_customer_id": True,
+                "escalated": False,
+                "escalation_reason": None,
+            }
+
+        # ================================================================
+        # NORMAL FLOW: Extract agent outputs
+        # ================================================================
+
+        response_text = agent_result.get("response", "")
+
+        if not response_text:
+            logger.warning("Agent returned empty response")
+            response_text = (
+                "I'm sorry, I couldn't generate a response for your request."
+            )
+
+        # Store assistant message
         context.add_message(
             role="assistant",
-            content=response,
-            language=language,
+            content=response_text,
+            agent=agent_name,
         )
 
-        # ====================================================
+        # ================================================================
         # ESCALATION CHECK
-        # ====================================================
+        # ================================================================
 
-        logger.info("Checking escalation conditions...")
+        agent_confidence = agent_result.get("confidence", 0.5)
+        tool_result = agent_result.get("tool_result")
 
         escalation_required = self._should_escalate(
             confidence=agent_confidence,
-            intent=agent_name,
+            agent_name=agent_name,
             tool_result=tool_result,
-            query=customer_query,
+            query=query,
         )
 
         escalation_reason = None
         if escalation_required:
             escalation_reason = self._get_escalation_reason(
                 confidence=agent_confidence,
-                intent=agent_name,
+                agent_name=agent_name,
                 tool_result=tool_result,
             )
-            logger.warning(f"Escalation triggered: {escalation_reason}")
 
-        # ====================================================
-        # BUILD FINAL RESPONSE
-        # ====================================================
+        # ================================================================
+        # RETURN RESPONSE
+        # ================================================================
 
-        final_response = {
+        return {
             "session_id": session_id,
+            "customer_id": context.customer_id,
             "language": language,
-            "response": response,
+            "agent": agent_name,
             "confidence": agent_confidence,
-            "intent": agent_name,
+            "reason": supervisor_result.get("reason", ""),
+            "method": supervisor_result.get("method", "gemini"),
+            "used_rag": bool(agent_result.get("rag_context")),
+            "used_tool": agent_result.get("tool_used") is not None,
+            "tool_name": agent_result.get("tool_used"),
+            "rag_context": agent_result.get("rag_context", {}),
+            "tool_data": tool_result,
+            "response": response_text,
+            "requires_customer_id": False,
             "escalated": escalation_required,
-            "rag_context": rag_context,
-            "tool_result": tool_result,
             "escalation_reason": escalation_reason,
         }
 
-        logger.info(
-            f"Query processed: confidence={agent_confidence}, "
-            f"escalated={escalation_required}"
+    async def process_text(
+        self,
+        session_id: str,
+        customer_query: str,
+        language: str = "en",
+        customer_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Compatibility wrapper used by the WebSocket layer.
+        """
+
+        return await self.handle(
+            query=customer_query,
+            session_id=session_id,
+            customer_id=customer_id,
+            language=language,
         )
 
-        return final_response
+    # ====================================================================
+    # HANDLE CUSTOMER ID INPUT
+    # ====================================================================
 
-    # ========================================================
-    # HELPER METHODS
-    # ========================================================
-
-    def _build_prompt(
+    async def _handle_customer_id_input(
         self,
-        customer_query: str,
+        session_id: str,
+        customer_id_input: str,
         language: str,
-        agent_name: str,
-        rag_result: Any,
-        tool_result: Any,
         context: Any,
-    ) -> str:
+    ) -> Dict[str, Any]:
         """
-        Build the prompt sent to Gemini.
+        Handle customer ID input when session is waiting for it.
+
+        Flow:
+        1. Validate the customer ID
+        2. Store it in session context
+        3. Retrieve pending request details
+        4. Resume the pending request
+        5. Execute tool with customer ID
+        6. Generate response
+        7. Clear pending state
         """
 
-        history = context.get_history()
-        history_text = "\n".join([
-            f"{msg['role'].upper()}: {msg['content']}"
-            for msg in history[-10:]  # Last 10 messages
-        ])
+        # ================================================================
+        # VALIDATE CUSTOMER ID
+        # ================================================================
 
-        rag_text = ""
-        if rag_result and rag_result.get("retrieved_context"):
-            rag_text = "\n".join([
-                f"- {doc.get('source', 'Unknown')}: {doc.get('content', '')}"
-                for doc in rag_result.get("retrieved_context", [])[:3]
-            ])
+        is_valid, error_msg, normalized_id = validate_customer_id(
+            customer_id_input,
+            allow_none=False,
+        )
 
-        tool_text = ""
-        if tool_result:
-            tool_text = f"Retrieved Information: {tool_result}"
+        if not is_valid:
+            logger.warning(f"Invalid customer ID: {error_msg}")
 
-        prompt = f"""
-You are a multilingual telecom customer-care assistant.
+            context.add_message(
+                role="user",
+                content=customer_id_input,
+            )
 
-LANGUAGE: {language.upper()}
-AGENT TYPE: {agent_name.upper()}
-CUSTOMER QUERY: {customer_query}
+            response_text = (
+                f"Invalid customer ID. {error_msg} "
+                f"Please provide your customer ID."
+            )
 
-CONVERSATION HISTORY (last 10 messages):
-{history_text if history_text else "No previous context"}
+            context.add_message(
+                role="assistant",
+                content=response_text,
+            )
 
-{"RETRIEVED KNOWLEDGE BASE:" + rag_text if rag_text else ""}
+            # Keep waiting
+            return {
+                "session_id": session_id,
+                "customer_id": context.customer_id,
+                "language": language,
+                "agent": "general",
+                "confidence": 0.0,
+                "reason": "Invalid Customer ID",
+                "method": "customer_id_validation",
+                "used_rag": False,
+                "used_tool": False,
+                "tool_name": None,
+                "rag_context": {},
+                "tool_data": None,
+                "response": response_text,
+                "requires_customer_id": True,
+                "escalated": False,
+                "escalation_reason": None,
+            }
 
-{"CUSTOMER ACCOUNT INFORMATION:" + tool_text if tool_text else ""}
+        # ================================================================
+        # STORE CUSTOMER ID
+        # ================================================================
 
-RULES:
-1. Respond in the customer's language ({language}).
-2. Answer using only the provided information.
-3. If knowledge base or account data is insufficient, indicate that
-   the information needs to be verified or that you cannot help.
-4. Keep responses concise and professional.
-5. Ask clarification questions if needed.
-6. Do not invent customer account or billing information.
-7. For sensitive issues or escalations, offer to connect with a human agent.
+        logger.info(f"Storing Customer ID for session {session_id}")
 
-RESPONSE:
-"""
+        context.customer_id = normalized_id
+        context.update(customer_id=normalized_id)
 
-        return prompt
+        # ================================================================
+        # RETRIEVE PENDING REQUEST
+        # ================================================================
+
+        pending_request = context.get_pending_customer_id_request()
+
+        if not pending_request.get("waiting_for_customer_id"):
+            logger.error(f"No pending request for session {session_id}")
+
+            return self._error_response(
+                "I'm sorry, but I cannot process your request right now."
+            )
+
+        # ================================================================
+        # RESUME PENDING REQUEST
+        # ================================================================
+
+        pending_agent = pending_request.get("agent")
+        pending_query = pending_request.get("query")
+        pending_tool = pending_request.get("tool")
+
+        logger.info(
+            f"Resuming pending {pending_agent} request "
+            f"for session {session_id}"
+        )
+
+        # Store user's customer ID input
+        context.add_message(
+            role="user",
+            content=customer_id_input,
+        )
+
+        # ================================================================
+        # GET AGENT AND EXECUTE
+        # ================================================================
+
+        agent = self.agents.get(pending_agent, self.agents["general"])
+
+        agent_context = self._build_agent_context(context)
+
+        try:
+            agent_result = await agent.handle(
+                query=pending_query,
+                context=agent_context,
+            )
+
+        except Exception as exc:
+            logger.exception(f"Resumed agent execution failed: {str(exc)}")
+
+            return self._error_response(
+                "I'm sorry, I encountered an error processing your request."
+            )
+
+        # ================================================================
+        # CHECK IF STILL REQUIRES CUSTOMER ID (shouldn't happen)
+        # ================================================================
+
+        if agent_result.get("requires_customer_id", False):
+            logger.error(
+                f"Agent {pending_agent} still requires Customer ID "
+                f"after it was provided!"
+            )
+
+            return self._error_response(
+                "I'm sorry, but I encountered an issue processing your "
+                "request. Please try again."
+            )
+
+        # ================================================================
+        # GENERATE FINAL RESPONSE
+        # ================================================================
+
+        response_text = agent_result.get(
+            "response",
+            "Your request has been processed.",
+        )
+
+        agent_confidence = agent_result.get("confidence", 0.5)
+        tool_result = agent_result.get("tool_result")
+
+        # Store assistant response
+        context.add_message(
+            role="assistant",
+            content=response_text,
+            agent=pending_agent,
+        )
+
+        # ================================================================
+        # ESCALATION CHECK
+        # ================================================================
+
+        escalation_required = self._should_escalate(
+            confidence=agent_confidence,
+            agent_name=pending_agent,
+            tool_result=tool_result,
+            query=pending_query,
+        )
+
+        escalation_reason = None
+        if escalation_required:
+            escalation_reason = self._get_escalation_reason(
+                confidence=agent_confidence,
+                agent_name=pending_agent,
+                tool_result=tool_result,
+            )
+
+        # ================================================================
+        # CLEAR PENDING STATE
+        # ================================================================
+
+        context.clear_pending_customer_id_request()
+
+        logger.info(f"Cleared pending Customer ID request for {session_id}")
+
+        # ================================================================
+        # RETURN FINAL RESPONSE
+        # ================================================================
+
+        return {
+            "session_id": session_id,
+            "customer_id": context.customer_id,
+            "language": language,
+            "agent": pending_agent,
+            "confidence": agent_confidence,
+            "reason": f"Resumed {pending_agent} request with Customer ID",
+            "method": "customer_id_resume",
+            "used_rag": bool(agent_result.get("rag_context")),
+            "used_tool": agent_result.get("tool_used") is not None,
+            "tool_name": agent_result.get("tool_used"),
+            "rag_context": agent_result.get("rag_context", {}),
+            "tool_data": tool_result,
+            "response": response_text,
+            "requires_customer_id": False,
+            "escalated": escalation_required,
+            "escalation_reason": escalation_reason,
+        }
+
+    # ====================================================================
+    # BUILD AGENT CONTEXT
+    # ====================================================================
+
+    def _build_agent_context(
+        self,
+        context: Any,
+    ) -> Dict[str, Any]:
+        """
+        Convert SessionContext into dictionary format for agents.
+        """
+
+        return {
+            "session_id": context.session_id,
+            "customer_id": context.customer_id,
+            "language": context.language,
+            "status": context.status,
+            "history": context.get_history(),
+            **context.get_data(),
+        }
+
+    # ====================================================================
+    # ESCALATION CHECKS
+    # ====================================================================
 
     def _should_escalate(
         self,
         confidence: float,
-        intent: str,
+        agent_name: str,
         tool_result: Any,
         query: str,
     ) -> bool:
         """
-        Determine whether the request should be escalated
-        to a human agent.
-
-        Escalation triggers:
-        - Confidence < 0.60
-        - Tool execution failed
-        - Customer requests escalation
-        - Sensitive/security issues
+        Determine whether escalation to human agent is needed.
         """
 
         # Low confidence
@@ -457,11 +656,8 @@ RESPONSE:
             "agent",
             "manager",
             "supervisor",
-            "complaint",
-            "dissatisfied",
         ]
-        query_lower = query.lower()
-        if any(keyword in query_lower for keyword in escalation_keywords):
+        if any(keyword in query.lower() for keyword in escalation_keywords):
             return True
 
         return False
@@ -469,24 +665,88 @@ RESPONSE:
     def _get_escalation_reason(
         self,
         confidence: float,
-        intent: str,
+        agent_name: str,
         tool_result: Any,
     ) -> str:
         """
-        Get a human-readable reason for escalation.
+        Get human-readable escalation reason.
         """
 
         if confidence < 0.60:
-            return f"Low confidence ({confidence:.2f}) - requires human review"
+            return f"Low confidence ({confidence:.2f}) in {agent_name} response"
 
         if tool_result and not tool_result.get("success", False):
-            return f"Tool execution failed: {tool_result.get('error', 'Unknown error')}"
+            error = tool_result.get("error", "Unknown error")
+            return f"Tool execution failed: {error}"
 
-        return "Customer requested escalation"
+        return "Escalation requested"
+
+    # ====================================================================
+    # ERROR RESPONSE
+    # ====================================================================
+
+    @staticmethod
+    def _error_response(
+        message: str,
+    ) -> Dict[str, Any]:
+        """
+        Standard error response.
+        """
+
+        return {
+            "session_id": None,
+            "customer_id": None,
+            "language": "en",
+            "agent": "general",
+            "confidence": 0.0,
+            "reason": message,
+            "method": "error",
+            "used_rag": False,
+            "used_tool": False,
+            "tool_name": None,
+            "rag_context": {},
+            "tool_data": None,
+            "response": message,
+            "requires_customer_id": False,
+            "escalated": False,
+            "escalation_reason": None,
+        }
+
+    # ====================================================================
+    # SESSION MANAGEMENT
+    # ====================================================================
+
+    def get_session(
+        self,
+        session_id: str,
+    ) -> Optional[Any]:
+        """
+        Retrieve an existing session.
+        """
+
+        return get_session(session_id)
+
+    def close_session(
+        self,
+        session_id: str,
+    ) -> bool:
+        """
+        Close an existing session.
+        """
+
+        context = get_session(session_id)
+
+        if context is None:
+            return False
+
+        context.close()
+        logger.info(f"Session closed: {session_id}")
+
+        return True
 
 
-# ============================================================
+# ========================================================================
 # SHARED ORCHESTRATOR INSTANCE
-# ============================================================
+# ========================================================================
 
 orchestrator = Orchestrator()

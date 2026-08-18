@@ -2,7 +2,6 @@ import logging
 from typing import Any, Dict, Optional
 
 from backend.app.gemini import generate_text
-from backend.app.rag import rag_service
 
 from tools.payment_tool import (
     get_payment_status,
@@ -80,10 +79,7 @@ class PaymentAgent:
             # --------------------------------------------------
 
             payment_data = None
-
-            tool_name = self._select_payment_tool(
-                query
-            )
+            tool_name = self._select_payment_tool(query)
 
             if tool_name:
 
@@ -91,18 +87,42 @@ class PaymentAgent:
                     "customer_id"
                 )
 
+                # ===================================================
+                # CRITICAL: Check for Customer ID before tool call
+                # ===================================================
+                # If tool requires customer ID but it's missing,
+                # return requires_customer_id signal instead of
+                # executing the tool.
+                # ===================================================
+
                 if not customer_id:
 
-                    logger.warning(
-                        "Customer ID not found in context."
+                    logger.info(
+                        f"Payment tool '{tool_name}' requires "
+                        f"customer ID but none found in context."
                     )
 
-                else:
+                    return {
+                        "agent": "payment",
+                        "success": True,
+                        "requires_customer_id": True,
+                        "tool_used": tool_name,
+                        "response": (
+                            "Please provide your customer ID."
+                        ),
+                        "confidence": 1.0,
+                        "rag_context": rag_context,
+                        "tool_result": None,
+                    }
 
-                    payment_data = self._call_payment_tool(
-                        tool_name=tool_name,
-                        customer_id=customer_id,
-                    )
+                # ===================================================
+                # Customer ID is available, execute tool
+                # ===================================================
+
+                payment_data = self._call_payment_tool(
+                    tool_name=tool_name,
+                    customer_id=customer_id,
+                )
 
             # --------------------------------------------------
             # 3. Generate final response using Gemini
@@ -115,11 +135,19 @@ class PaymentAgent:
                 context=context,
             )
 
+            # ===================================================
+            # Standardized Result Contract
+            # ===================================================
+
             return {
                 "agent": "payment",
                 "response": response,
                 "success": True,
+                "confidence": 0.95,
                 "tool_used": tool_name,
+                "tool_result": payment_data,
+                "rag_context": rag_context,
+                "requires_customer_id": False,
             }
 
         except Exception as exc:
@@ -186,6 +214,8 @@ class PaymentAgent:
             )
 
             # Your RAG search() is synchronous.
+            from backend.app.rag import rag_service
+
             rag_result = rag_service.search(
                 query=query,
                 request_id=request_id,
@@ -499,6 +529,11 @@ Give only the final customer-facing answer.
             "agent": "payment",
             "response": message,
             "success": False,
+            "confidence": 0.0,
+            "tool_used": None,
+            "tool_result": None,
+            "rag_context": None,
+            "requires_customer_id": False,
         }
 
 

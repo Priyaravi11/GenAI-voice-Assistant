@@ -1,6 +1,7 @@
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import EndCall from "../../components/CallControls/EndCall";
 import { useGeminiLive } from "../../hooks/useGeminiLive";
+import { useWebSocket } from "../../hooks/useWebSocket";
 import type { TranscriptEntry } from "../../types";
 
 const presetQueries = [
@@ -30,12 +31,92 @@ type LiveCallProps = {
 };
 
 function LiveCall({ onEndCall, onOpenEscalationDesk, isAdmin = false }: LiveCallProps) {
+  const sessionId = useMemo(() => `session-${Date.now()}`, []);
   const [language, setLanguage] = useState("English (US)");
   const [inputText, setInputText] = useState("");
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [isPaused, setIsPaused] = useState(false);
   const [transcript, setTranscript] = useState<TranscriptEntry[]>(baseTranscript);
   const live = useGeminiLive();
+  const socket = useWebSocket(sessionId);
+
+  function languageCode(label: string) {
+    if (label.includes("Hindi")) return "hi";
+    if (label.includes("Tamil")) return "ta";
+    if (label.includes("Telugu")) return "te";
+    return "en";
+  }
+
+  useEffect(() => {
+    if (!socket.connected) return;
+
+    socket.send({
+      type: "start_call",
+      session_id: sessionId,
+      language: languageCode(language),
+    });
+  }, [language, sessionId, socket.connected]);
+
+  useEffect(() => {
+    if (!socket.lastMessage) return;
+
+    try {
+      const message = JSON.parse(socket.lastMessage) as {
+        type?: string;
+        content?: string;
+        error?: string;
+        language?: string;
+        confidence?: number;
+        reason?: string;
+      };
+
+      if (message.type === "assistant_response" && message.content) {
+        setIsAnalyzing(false);
+        setTranscript((current) => [
+          ...current,
+          {
+            id: `a-${Date.now()}`,
+            speaker: "VoiceAI",
+            language: message.language || languageCode(language),
+            text: message.content || "",
+            time: "Now",
+            confidence: Math.round((message.confidence ?? 0.9) * 100),
+          },
+        ]);
+      }
+
+      if (message.type === "error" && message.error) {
+        setIsAnalyzing(false);
+        setTranscript((current) => [
+          ...current,
+          {
+            id: `e-${Date.now()}`,
+            speaker: "VoiceAI",
+            language: "English",
+            text: message.error || "Something went wrong while processing the request.",
+            time: "Now",
+            confidence: 0,
+          },
+        ]);
+      }
+
+      if (message.type === "escalation_notice") {
+        setTranscript((current) => [
+          ...current,
+          {
+            id: `x-${Date.now()}`,
+            speaker: "VoiceAI",
+            language: "English",
+            text: message.reason || "This request has been marked for human escalation.",
+            time: "Now",
+            confidence: Math.round((message.confidence ?? 0.7) * 100),
+          },
+        ]);
+      }
+    } catch {
+      // Ignore non-JSON messages from browser/dev tooling.
+    }
+  }, [language, socket.lastMessage]);
 
   function detectLanguage(text: string) {
     if (/[\u0900-\u097F]/.test(text)) return "Hindi";
@@ -61,18 +142,15 @@ function LiveCall({ onEndCall, onOpenEscalationDesk, isAdmin = false }: LiveCall
         time: "Now",
         confidence: 92,
       },
-      {
-        id: `a-${Date.now()}`,
-        speaker: "VoiceAI",
-        language: "English",
-        text: "I am checking the account context, matching policy, and available telecom tools for this request.",
-        time: "Now",
-        confidence: 95,
-      },
     ]);
     setInputText("");
 
-    window.setTimeout(() => setIsAnalyzing(false), 650);
+    socket.send({
+      type: "user_message",
+      session_id: sessionId,
+      content: trimmed,
+      language: languageCode(language),
+    });
   }
 
   function handleEndCall() {

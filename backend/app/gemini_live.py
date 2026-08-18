@@ -19,7 +19,11 @@ from typing import Any, AsyncIterator, Dict, Optional
 import json
 
 from google.genai import types
-from google.api_core.exceptions import GoogleAPIError
+
+try:
+    from google.api_core.exceptions import GoogleAPIError
+except ImportError:
+    GoogleAPIError = Exception
 
 from backend.app.gemini import client, get_live_config
 from backend.app.logger import get_logger
@@ -61,11 +65,15 @@ class GeminiLiveSession:
             True if connection successful, False otherwise
         """
         try:
+            if client is None:
+                self.logger.error("Gemini client is not configured")
+                return False
+
             self.logger.info(f"Connecting to Gemini Live (language: {self.language})")
             
             config = get_live_config()
             self.session = await client.aio.live.connect(
-                model="gemini-2.0-flash",
+                model="gemini-23.6-flash",
                 config=config,
             )
             

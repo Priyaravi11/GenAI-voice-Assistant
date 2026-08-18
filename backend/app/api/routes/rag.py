@@ -3,9 +3,6 @@ from typing import Any, Dict, Optional
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
-from backend.app.rag import retrieve_context
-
-
 router = APIRouter(
     prefix="/rag",
     tags=["RAG"],
@@ -42,6 +39,8 @@ async def query_rag(request: RAGQueryRequest):
     """
 
     try:
+        from backend.app.rag import retrieve_context
+
         nlu_data = request.model_dump()
 
         result = retrieve_context(nlu_data)

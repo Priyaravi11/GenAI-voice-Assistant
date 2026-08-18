@@ -392,6 +392,10 @@ async def _handle_user_message(
         intent = result.get("intent", "general")
         rag_context = result.get("rag_context", {})
         escalated = result.get("escalated", False)
+        requires_customer_id = result.get(
+            "requires_customer_id",
+            False,
+        )
 
         # Send response
         await manager.send_personal(
@@ -403,6 +407,7 @@ async def _handle_user_message(
                 "confidence": confidence,
                 "intent": intent,
                 "escalated": escalated,
+                "requires_customer_id": requires_customer_id,
             },
         )
 

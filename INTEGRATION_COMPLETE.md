@@ -90,7 +90,7 @@ Voice/Text Output
 9. **backend/app/gemini.py** (ENHANCED)
    - Enhanced `generate_text()` with better error handling
    - Added `generate_text_streaming()` for real-time responses
-   - Model updated to `gemini-2.0-flash`
+   - Model updated to `gemini-3.6-flash`
    - Better exception handling
 
 10. **backend/app/database.py** (FIXED)

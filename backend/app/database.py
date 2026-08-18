@@ -1,6 +1,9 @@
+import logging
 import os
 from dotenv import load_dotenv
 from pymongo import MongoClient
+
+logger = logging.getLogger(__name__)
 
 
 # ============================================================
@@ -47,7 +50,8 @@ if not MONGODB_DATABASE:
 
 client = MongoClient(
     MONGODB_URI,
-    serverSelectionTimeoutMS=5000
+    serverSelectionTimeoutMS=5000,
+    connect=False,
 )
 
 
@@ -59,24 +63,31 @@ db = client[MONGODB_DATABASE]
 
 
 # ============================================================
-# TEST MONGODB CONNECTION
+# MONGODB CONNECTION CHECK
 # ============================================================
 
-try:
-    client.admin.command("ping")
-    print("✓ MongoDB connected successfully!")
-    print(f"  Database: {MONGODB_DATABASE}")
-    DB_CONNECTED = True
+DB_CONNECTED = False
 
-except Exception as e:
-    import logging
-    logger = logging.getLogger(__name__)
-    logger.warning(
-        f"MongoDB connection warning: {e}. "
-        "Some features will not work until MongoDB is available."
-    )
-    DB_CONNECTED = False
 
+def check_connection() -> bool:
+    """
+    Ping MongoDB on demand without making app imports depend on the network.
+    """
+
+    global DB_CONNECTED
+
+    try:
+        client.admin.command("ping")
+        DB_CONNECTED = True
+        return True
+
+    except Exception as e:
+        logger.warning(
+            f"MongoDB connection warning: {e}. "
+            "Some features will not work until MongoDB is available."
+        )
+        DB_CONNECTED = False
+        return False
 
 # ============================================================
 # COLLECTIONS

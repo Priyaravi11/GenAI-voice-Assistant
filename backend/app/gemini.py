@@ -12,19 +12,12 @@ load_dotenv()
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
-if not GEMINI_API_KEY:
-    raise ValueError(
-        "GEMINI_API_KEY not found in environment variables"
-    )
-
 
 # ============================================================
 # Gemini Client
 # ============================================================
 
-client = genai.Client(
-    api_key=GEMINI_API_KEY
-)
+client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 
 
 # ============================================================
@@ -160,12 +153,15 @@ async def generate_text(prompt: str) -> str:
     if not prompt or not prompt.strip():
         raise ValueError("Prompt cannot be empty")
 
+    if client is None:
+        raise RuntimeError("GEMINI_API_KEY not found in environment variables")
+
     if len(prompt) > 100000:
         raise ValueError("Prompt exceeds maximum length (100k chars)")
 
     try:
         response = await client.aio.models.generate_content(
-            model="gemini-2.0-flash",
+            model="gemini-3.6-flash",
             contents=prompt,
         )
 
@@ -201,9 +197,12 @@ async def generate_text_streaming(prompt: str):
     if not prompt or not prompt.strip():
         raise ValueError("Prompt cannot be empty")
 
+    if client is None:
+        raise RuntimeError("GEMINI_API_KEY not found in environment variables")
+
     try:
         async with await client.aio.models.generate_content_stream(
-            model="gemini-2.0-flash",
+            model="gemini-3.6-flash",
             contents=prompt,
         ) as stream:
             async for chunk in stream:

@@ -6,6 +6,7 @@ from typing import Any, Dict, Optional
 # ============================================================
 
 from tools.plans_tool import (
+    get_current_plan,
     get_plan_details,
     compare_plans,
     find_plans,
@@ -127,17 +128,24 @@ class PlansAgent:
         )
 
         # ====================================================
-        # FINAL RESULT
+        # FINAL RESULT - Standardized Contract
         # ====================================================
+
+        # Check if tool execution requires customer ID
+        requires_customer_id = (
+            tool_data is not None
+            and tool_data.get("requires_customer_id", False)
+        )
 
         return {
             "agent": "plans",
-            "used_rag": bool(rag_context),
-            "used_tool": tool_data is not None,
-            "tool_name": tool_name,
-            "rag_context": rag_context,
-            "tool_data": tool_data,
             "response": response_text,
+            "success": True,
+            "confidence": 0.90,
+            "tool_used": tool_name,
+            "tool_result": tool_data,
+            "rag_context": rag_context,
+            "requires_customer_id": requires_customer_id,
         }
 
     # ========================================================
@@ -354,10 +362,10 @@ class PlansAgent:
                 if not customer_id:
 
                     return {
-                        "success": False,
+                        "success": True,
+                        "requires_customer_id": True,
                         "message": (
-                            "Customer ID is required "
-                            "to retrieve the current plan."
+                            "Please provide your customer ID."
                         )
                     }
 
@@ -463,10 +471,10 @@ class PlansAgent:
                 if not customer_id:
 
                     return {
-                        "success": False,
+                        "success": True,
+                        "requires_customer_id": True,
                         "message": (
-                            "Customer ID is required "
-                            "to check plan change information."
+                            "Please provide your customer ID."
                         )
                     }
 
