@@ -1,5 +1,6 @@
 import json
 import logging
+import os
 import re
 from typing import Any, Dict, Optional
 
@@ -7,6 +8,12 @@ from backend.app.gemini import generate_text
 
 
 logger = logging.getLogger(__name__)
+
+
+SUPERVISOR_USE_GEMINI = os.getenv(
+    "SUPERVISOR_USE_GEMINI",
+    "false",
+).lower() in {"1", "true", "yes", "on"}
 
 
 class SupervisorAgent:
@@ -88,7 +95,19 @@ class SupervisorAgent:
             }
 
         # -----------------------------------------------------
-        # Primary classification: Gemini
+        # Primary classification: deterministic rules
+        # -----------------------------------------------------
+
+        rule_result = self._classify_with_rules(query)
+
+        if (
+            rule_result["agent"] != "general"
+            or not SUPERVISOR_USE_GEMINI
+        ):
+            return rule_result
+
+        # -----------------------------------------------------
+        # Optional classification: Gemini for ambiguous general
         # -----------------------------------------------------
 
         try:
@@ -104,19 +123,19 @@ class SupervisorAgent:
         except Exception as exc:
 
             logger.warning(
-                "Gemini supervisor classification failed: %s",
+                "Optional Gemini supervisor classification failed: %s",
                 exc,
             )
 
         # -----------------------------------------------------
-        # Fallback classification: rules
+        # Fallback classification: original rule result
         # -----------------------------------------------------
 
         logger.info(
             "Using rule-based supervisor fallback."
         )
 
-        return self._classify_with_rules(query)
+        return rule_result
 
     # ---------------------------------------------------------
     # GEMINI CLASSIFICATION

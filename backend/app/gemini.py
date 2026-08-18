@@ -1,5 +1,7 @@
 import os
 import logging
+import re
+import time
 from dotenv import load_dotenv
 from google import genai
 from google.genai import types
@@ -36,10 +38,12 @@ GEMINI_TEXT_MODELS = [
     model.strip()
     for model in os.getenv(
         "GEMINI_TEXT_MODELS",
-        "gemini-2.5-flash,gemini-2.0-flash",
+        "gemini-3.6-flash,gemini-2.5-flash",
     ).split(",")
     if model.strip()
 ]
+
+_quota_cooldown_until = 0.0
 
 
 def _is_quota_error(error: Exception) -> bool:
@@ -54,6 +58,18 @@ def _is_quota_error(error: Exception) -> bool:
 def _is_retryable_error(error: Exception) -> bool:
     err_str = str(error)
     return "503" in err_str or "UNAVAILABLE" in err_str
+
+
+def _get_retry_delay_seconds(error: Exception) -> float:
+    match = re.search(r"retryDelay['\"]?:\s*['\"]?(\d+(?:\.\d+)?)s", str(error))
+    if match:
+        return float(match.group(1))
+
+    match = re.search(r"Please retry in (\d+(?:\.\d+)?)s", str(error))
+    if match:
+        return float(match.group(1))
+
+    return 60.0
 
 
 # ============================================================
@@ -186,12 +202,17 @@ async def generate_text(prompt: str) -> str:
     if len(prompt) > 100000:
         raise ValueError("Prompt exceeds maximum length (100k chars)")
 
+    global _quota_cooldown_until
+
     models_to_try = GEMINI_TEXT_MODELS
 
     last_exception = None
     quota_exhausted = False
 
-    if client is not None:
+    if client is not None and time.monotonic() < _quota_cooldown_until:
+        last_exception = RuntimeError("Gemini quota cooldown is active")
+        quota_exhausted = True
+    elif client is not None:
         for model_name in models_to_try:
             for attempt in range(3):
                 try:
@@ -210,6 +231,8 @@ async def generate_text(prompt: str) -> str:
                             f"Gemini quota exhausted for model {model_name}; "
                             "switching to fallback provider."
                         )
+                        retry_delay = _get_retry_delay_seconds(e)
+                        _quota_cooldown_until = time.monotonic() + retry_delay
                         quota_exhausted = True
                         break
 

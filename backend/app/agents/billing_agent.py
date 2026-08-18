@@ -2,6 +2,7 @@ import logging
 from typing import Any, Dict, Optional
 
 from backend.app.gemini import generate_text
+from backend.app.agents.rag_formatter import build_response_from_rag
 
 from tools.billing_tool import (
     get_current_bill,
@@ -244,11 +245,17 @@ class BillingAgent:
         try:
             if self.rag is not None:
                 if hasattr(self.rag, "retrieve"):
-                    result = self.rag.retrieve(query)
+                    result = self.rag.retrieve(
+                        query=query,
+                        category="billing",
+                    )
                     return result
 
                 if hasattr(self.rag, "search"):
-                    return self.rag.search(query=query)
+                    return self.rag.search(
+                        query=query,
+                        intent="billing",
+                    )
 
             request_id = context.get(
                 "request_id",
@@ -586,6 +593,7 @@ Give only the final customer-facing answer.
 
         return self._build_fallback_response(
             query=query,
+            rag_context=rag_context,
             billing_data=billing_data,
         )
 
@@ -596,6 +604,7 @@ Give only the final customer-facing answer.
     @staticmethod
     def _build_fallback_response(
         query: str,
+        rag_context: Any,
         billing_data: Any,
     ) -> str:
         if isinstance(billing_data, dict):
@@ -638,6 +647,10 @@ Give only the final customer-facing answer.
 
             if isinstance(data, list):
                 return f"I found {len(data)} billing record(s) for your account."
+
+        rag_answer = build_response_from_rag(rag_context)
+        if rag_answer:
+            return rag_answer
 
         if "bill" in query.lower():
             return "I can help with billing, but I need a valid customer ID to look up account-specific bill details."

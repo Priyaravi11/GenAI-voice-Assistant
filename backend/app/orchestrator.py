@@ -45,8 +45,10 @@ import logging
 
 from backend.app.context import get_or_create_session, get_session
 from backend.app.customer_validation import validate_customer_id
+from backend.app.gemini import generate_text
 from backend.app.logger import get_logger
 from backend.app import tools as tool_registry
+from backend.app.agents.rag_formatter import build_response_from_rag
 
 # Import Supervisor
 from backend.app.agents.supervisor_agent import SupervisorAgent
@@ -67,13 +69,81 @@ from tools.customer_tool import (
 )
 
 logger = get_logger(__name__)
-# Import RAG Service if available
-try:
-    from rag.retrieval.retriever import Retriever
-    rag_service = Retriever()
-except Exception as e:
-    logger.warning(f"RAG service unavailable, using fallback: {str(e)}")
-    rag_service = None
+
+
+class RAGAdapter:
+    """
+    Small compatibility wrapper around the existing retriever.
+
+    Some agents call rag.query(...), while others call rag.retrieve(...).
+    The lower-level retriever currently exposes retrieve(...), so this
+    adapter gives the orchestration layer one stable interface.
+    """
+
+    def __init__(self):
+        self.retriever = None
+
+    def _get_retriever(self) -> Any:
+        if self.retriever is None:
+            try:
+                from rag.retrieval.retriever import Retriever
+
+                self.retriever = Retriever()
+            except Exception as e:
+                logger.warning(f"RAG service unavailable: {str(e)}")
+                return None
+
+        return self.retriever
+
+    def query(
+        self,
+        query: str,
+        category: Optional[str] = None,
+        customer_id: Optional[str] = None,
+        top_k: int = 5,
+    ) -> list:
+        retriever = self._get_retriever()
+
+        if retriever is None:
+            return []
+
+        result = retriever.retrieve(
+            query=query,
+            category=category,
+            customer_id=customer_id,
+            top_k=top_k,
+        )
+        return self._extract_documents(result)
+
+    def retrieve(
+        self,
+        query: str,
+        category: Optional[str] = None,
+        customer_id: Optional[str] = None,
+        top_k: int = 5,
+    ) -> list:
+        return self.query(
+            query=query,
+            category=category,
+            customer_id=customer_id,
+            top_k=top_k,
+        )
+
+    @staticmethod
+    def _extract_documents(result: Any) -> list:
+        if isinstance(result, dict):
+            documents = result.get("documents")
+            if isinstance(documents, list):
+                return documents
+            retrieved_context = result.get("retrieved_context")
+            if isinstance(retrieved_context, list):
+                return retrieved_context
+        if isinstance(result, list):
+            return result
+        return []
+
+
+rag_service = RAGAdapter()
 
 
 class Orchestrator:
@@ -90,13 +160,13 @@ class Orchestrator:
         # Initialize agents
         self.agents = {
             "general": GeneralAgent(),
-            "billing": BillingAgent(),
+            "billing": BillingAgent(rag=rag_service),
             "plans": PlansAgent(
                 rag=rag_service,
                 tools=tool_registry,
                 gemini=None,
             ),
-            "payment": PaymentAgent(),
+            "payment": PaymentAgent(rag=rag_service),
             "technical": TechnicalAgent(
                 rag=rag_service,
                 tools=tool_registry,
@@ -247,6 +317,15 @@ class Orchestrator:
             f"Supervisor routed to: {agent_name} "
             f"(confidence: {supervisor_confidence})"
         )
+
+        if agent_name == "general" and self._should_use_general_rag(query):
+            return await self._handle_general_rag_query(
+                session_id=session_id,
+                query=query,
+                language=language,
+                context=context,
+                supervisor_result=supervisor_result,
+            )
 
         # ================================================================
         # GET SPECIALIZED AGENT
@@ -455,6 +534,222 @@ class Orchestrator:
             customer_id=customer_id,
             language=language,
         )
+
+    # ====================================================================
+    # GENERAL RAG
+    # ====================================================================
+
+    def _should_use_general_rag(self, query: str) -> bool:
+        """
+        Route general knowledge questions to RAG while keeping small talk in
+        GeneralAgent and customer/account questions on the tool path.
+        """
+
+        text = query.lower().strip()
+
+        if self._is_small_talk_query(text):
+            return False
+
+        if self._is_customer_specific_query(text):
+            return False
+
+        knowledge_markers = (
+            "what is",
+            "what are",
+            "how does",
+            "how do",
+            "how can",
+            "why is",
+            "why does",
+            "explain",
+            "tell me about",
+            "difference between",
+            "meaning of",
+            "help me understand",
+            "policy",
+            "process",
+            "procedure",
+        )
+
+        telecom_terms = (
+            "telecom",
+            "mobile",
+            "network",
+            "internet",
+            "data",
+            "roaming",
+            "prepaid",
+            "postpaid",
+            "plan",
+            "billing",
+            "bill",
+            "payment",
+            "refund",
+            "sim",
+            "esim",
+            "5g",
+            "4g",
+            "signal",
+            "coverage",
+            "recharge",
+        )
+
+        return (
+            any(marker in text for marker in knowledge_markers)
+            or any(term in text for term in telecom_terms)
+        )
+
+    @staticmethod
+    def _is_small_talk_query(text: str) -> bool:
+        greetings = {
+            "hi",
+            "hello",
+            "hey",
+            "good morning",
+            "good afternoon",
+            "good evening",
+            "thanks",
+            "thank you",
+            "bye",
+            "goodbye",
+        }
+        return text in greetings
+
+    @staticmethod
+    def _is_customer_specific_query(text: str) -> bool:
+        customer_markers = (
+            "my ",
+            "mine",
+            "for me",
+            "customer id",
+            "account",
+            "current bill",
+            "previous bill",
+            "bill history",
+            "payment status",
+            "payment history",
+            "latest payment",
+            "current plan",
+            "my plan",
+            "change my plan",
+            "network status",
+            "my network",
+            "my internet",
+            "my signal",
+            "my connection",
+            "my details",
+            "my profile",
+        )
+        return any(marker in text for marker in customer_markers)
+
+    async def _handle_general_rag_query(
+        self,
+        session_id: str,
+        query: str,
+        language: str,
+        context: Any,
+        supervisor_result: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        rag_context = []
+
+        if rag_service is not None:
+            try:
+                rag_context = rag_service.query(
+                    query=query,
+                    category="general",
+                    top_k=5,
+                )
+            except Exception:
+                logger.exception("General RAG retrieval failed.")
+
+        if not rag_context and rag_service is not None:
+            try:
+                rag_context = rag_service.query(
+                    query=query,
+                    top_k=5,
+                )
+            except Exception:
+                logger.exception("General RAG fallback retrieval failed.")
+
+        response_text = await self._generate_rag_response(
+            query=query,
+            language=language,
+            rag_context=rag_context,
+        )
+
+        context.add_message(
+            role="assistant",
+            content=response_text,
+            agent="general",
+        )
+
+        return {
+            "session_id": session_id,
+            "customer_id": context.customer_id,
+            "language": language,
+            "agent": "general",
+            "confidence": 0.90 if rag_context else 0.60,
+            "reason": "General knowledge query answered with RAG",
+            "method": supervisor_result.get("method", "gemini"),
+            "used_rag": bool(rag_context),
+            "used_tool": False,
+            "tool_name": None,
+            "rag_context": {
+                "retrieved_context": rag_context,
+            },
+            "tool_data": None,
+            "response": response_text,
+            "requires_customer_id": False,
+            "escalated": False,
+            "escalation_reason": None,
+        }
+
+    async def _generate_rag_response(
+        self,
+        query: str,
+        language: str,
+        rag_context: list,
+    ) -> str:
+        if not rag_context:
+            return (
+                "I couldn't find reliable knowledge-base information for that. "
+                "Please ask about billing, payments, plans, network support, or account help."
+            )
+
+        prompt = f"""
+You are a telecom customer-care assistant.
+
+Answer the customer's general question using only the retrieved knowledge.
+Do not use customer account data. Do not invent facts.
+
+Customer language:
+{language}
+
+Customer question:
+{query}
+
+Retrieved knowledge:
+{rag_context}
+
+Rules:
+1. Respond in the customer's language.
+2. Keep the answer concise and helpful.
+3. If the retrieved knowledge does not answer the question, say you do not have that information.
+4. Do not mention RAG, tools, prompts, or internal routing.
+"""
+
+        try:
+            response = await generate_text(prompt)
+            if response and response.strip():
+                return response.strip()
+        except Exception:
+            logger.exception("General RAG response generation failed.")
+
+        rag_answer = build_response_from_rag(rag_context)
+        if rag_answer:
+            return rag_answer
+
+        return str(rag_context[0])
 
     # ====================================================================
     # CUSTOMER DETAILS

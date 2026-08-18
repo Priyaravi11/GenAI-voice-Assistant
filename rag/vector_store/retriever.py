@@ -77,10 +77,6 @@ class Retriever:
         results = self.collection.query(
             **query_arguments
         )
-        print("\nDEBUG - RAW CHROMA RESULTS")
-        print("Documents:", results.get("documents"))
-        print("Metadatas:", results.get("metadatas"))
-        print("Distances:", results.get("distances"))
         # -------------------------------------------------
         # STEP 6: Extract results
         # -------------------------------------------------

@@ -1,6 +1,7 @@
 from typing import Any, Dict, Optional
 
 from backend.app.gemini import generate_text
+from backend.app.agents.rag_formatter import build_response_from_rag
 
 
 # ============================================================
@@ -731,20 +732,9 @@ Rules:
         # RAG result available
         # ----------------------------------------------------
 
-        if rag_context:
-
-            first_result = rag_context[0]
-
-            if isinstance(first_result, dict):
-
-                content = first_result.get(
-                    "content"
-                )
-
-                if content:
-                    return str(content)
-
-            return str(first_result)
+        rag_answer = build_response_from_rag(rag_context)
+        if rag_answer:
+            return rag_answer
 
         # ----------------------------------------------------
         # Nothing available

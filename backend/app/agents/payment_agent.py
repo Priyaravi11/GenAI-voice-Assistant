@@ -2,6 +2,7 @@ import logging
 from typing import Any, Dict, Optional
 
 from backend.app.gemini import generate_text
+from backend.app.agents.rag_formatter import build_response_from_rag
 
 from tools.payment_tool import (
     get_payment_status,
@@ -38,6 +39,16 @@ class PaymentAgent:
           ↓
         Final Response
     """
+
+    def __init__(
+        self,
+        gemini: Any = None,
+        rag: Any = None,
+        payment_tool: Any = None,
+    ):
+        self.gemini = gemini
+        self.rag = rag
+        self.payment_tool = payment_tool
 
     # ==========================================================
     # MAIN ENTRY POINT
@@ -173,6 +184,18 @@ class PaymentAgent:
     ) -> Optional[Dict[str, Any]]:
 
         try:
+            if self.rag is not None:
+                if hasattr(self.rag, "retrieve"):
+                    return self.rag.retrieve(
+                        query=query,
+                        category="payment",
+                    )
+
+                if hasattr(self.rag, "search"):
+                    return self.rag.search(
+                        query=query,
+                        intent="payment",
+                    )
 
             request_id = context.get(
                 "request_id",
@@ -513,6 +536,7 @@ Give only the final customer-facing answer.
 
         return self._build_fallback_response(
             query=query,
+            rag_context=rag_context,
             payment_data=payment_data,
         )
 
@@ -523,6 +547,7 @@ Give only the final customer-facing answer.
     @staticmethod
     def _build_fallback_response(
         query: str,
+        rag_context: Any,
         payment_data: Any,
     ) -> str:
         if isinstance(payment_data, dict):
@@ -570,6 +595,10 @@ Give only the final customer-facing answer.
                     return prefix + ", ".join(details) + "."
 
             return payment_data.get("message", "Payment information retrieved successfully.")
+
+        rag_answer = build_response_from_rag(rag_context)
+        if rag_answer:
+            return rag_answer
 
         if "payment" in query.lower() or "paid" in query.lower():
             return "I can help with payments, but I need a valid customer ID to look up account-specific payment details."
