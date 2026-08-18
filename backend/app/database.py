@@ -97,6 +97,8 @@ def check_connection() -> bool:
 # BILLING
 # ------------------------------------------------------------
 
+accounts_collection = db["telecom_account"]
+
 billing_collection = db["telecom_billing_history"]
 
 billing_preferences_collection = db[
@@ -203,6 +205,7 @@ vas_subscription_collection = db[
 # ============================================================
 
 ALL_COLLECTIONS = {
+    "accounts": accounts_collection,
     "billing": billing_collection,
     "billing_preferences": billing_preferences_collection,
     "billing_queries": billing_queries_collection,

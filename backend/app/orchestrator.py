@@ -682,7 +682,11 @@ class Orchestrator:
             return f"Low confidence ({confidence:.2f}) in {agent_name} response"
 
         if tool_result and not tool_result.get("success", False):
-            error = tool_result.get("error", "Unknown error")
+            error = (
+                tool_result.get("error")
+                or tool_result.get("message")
+                or "The support tool could not complete the lookup."
+            )
             return f"Tool execution failed: {error}"
 
         return "Escalation requested"

@@ -39,6 +39,9 @@ htmlcov/
 .tox/
 *.cover
 .hypothesis/
+test_output.txt
+test_results.txt
+err.txt
 
 # Jupyter Notebooks
 .ipynb_checkpoints/
@@ -46,6 +49,8 @@ htmlcov/
 
 # Data & Database
 data/chroma/
+rag/data/chroma/
+rag/chroma_test_bge/
 data/processed/
 *.db
 *.sqlite3
@@ -67,6 +72,8 @@ ehthumbs.db
 .cache/
 .npm-cache/
 node_modules/
+frontend/dist/
+*.tsbuildinfo
 *.pickle
 *.pkl
 *.tmp

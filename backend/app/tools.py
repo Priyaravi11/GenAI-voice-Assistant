@@ -22,6 +22,9 @@
 import inspect
 from typing import Any, Dict
 
+import logging
+import traceback
+
 
 # ============================================================
 # IMPORT TOOL MODULES
@@ -164,7 +167,64 @@ def get_tool_info(tool_name: str):
 # EXECUTE TOOL
 # ============================================================
 
+
+logger = logging.getLogger(__name__)
+
 def execute_tool(tool_name: str, **kwargs) -> Dict[str, Any]:
+
+    tool_function = get_tool(tool_name)
+
+    if tool_function is None:
+        return {
+            "success": False,
+            "tool": tool_name,
+            "message": f"Tool '{tool_name}' is not registered",
+            "available_tools": list_tools()
+        }
+
+    try:
+        logger.info(
+            "Executing tool: %s | kwargs=%s",
+            tool_name,
+            kwargs
+        )
+
+        result = tool_function(**kwargs)
+
+        if inspect.isawaitable(result):
+            return {
+                "success": False,
+                "tool": tool_name,
+                "message": (
+                    f"Tool '{tool_name}' is asynchronous. "
+                    "Use execute_tool_async() instead."
+                )
+            }
+
+        logger.info(
+            "Tool completed: %s | result=%s",
+            tool_name,
+            result
+        )
+
+        return result
+
+    except Exception as e:
+
+        logger.exception(
+            "TOOL EXECUTION FAILED: %s | kwargs=%s",
+            tool_name,
+            kwargs
+        )
+
+        return {
+            "success": False,
+            "tool": tool_name,
+            "message": f"Failed to execute tool '{tool_name}'",
+            "error": str(e),
+            "exception_type": type(e).__name__,
+            "traceback": traceback.format_exc()
+        }
     """
     Execute a registered telecom tool.
 
@@ -256,71 +316,71 @@ def execute_tool(tool_name: str, **kwargs) -> Dict[str, Any]:
 # ASYNC TOOL EXECUTION
 # ============================================================
 
-async def execute_tool_async(
-    tool_name: str,
-    **kwargs
-) -> Dict[str, Any]:
-    """
-    Execute both synchronous and asynchronous tools.
+# async def execute_tool_async(
+#     tool_name: str,
+#     **kwargs
+# ) -> Dict[str, Any]:
+#     """
+#     Execute both synchronous and asynchronous tools.
 
-    This function is useful when the FastAPI/Agent layer
-    becomes asynchronous.
-    """
+#     This function is useful when the FastAPI/Agent layer
+#     becomes asynchronous.
+#     """
 
-    # --------------------------------------------------------
-    # Get tool
-    # --------------------------------------------------------
+#     # --------------------------------------------------------
+#     # Get tool
+#     # --------------------------------------------------------
 
-    tool_function = get_tool(tool_name)
+#     tool_function = get_tool(tool_name)
 
-    if tool_function is None:
+#     if tool_function is None:
 
-        return {
-            "success": False,
-            "tool": tool_name,
-            "message": f"Tool '{tool_name}' is not registered",
-            "available_tools": list_tools()
-        }
+#         return {
+#             "success": False,
+#             "tool": tool_name,
+#             "message": f"Tool '{tool_name}' is not registered",
+#             "available_tools": list_tools()
+#         }
 
-    # --------------------------------------------------------
-    # Execute
-    # --------------------------------------------------------
+#     # --------------------------------------------------------
+#     # Execute
+#     # --------------------------------------------------------
 
-    try:
+#     try:
 
-        result = tool_function(**kwargs)
+#         result = tool_function(**kwargs)
 
-        # ----------------------------------------------------
-        # Wait for async result if required
-        # ----------------------------------------------------
+#         # ----------------------------------------------------
+#         # Wait for async result if required
+#         # ----------------------------------------------------
 
-        if inspect.isawaitable(result):
-            result = await result
+#         if inspect.isawaitable(result):
+#             result = await result
 
-        return result
+#         return result
 
-    except TypeError as e:
+#     except TypeError as e:
 
-        return {
-            "success": False,
-            "tool": tool_name,
-            "message": (
-                f"Invalid arguments provided for tool "
-                f"'{tool_name}'"
-            ),
-            "error": str(e)
-        }
+#         return {
+#             "success": False,
+#             "tool": tool_name,
+#             "message": (
+#                 f"Invalid arguments provided for tool "
+#                 f"'{tool_name}'"
+#             ),
+#             "error": str(e)
+#         }
 
-    except Exception as e:
+#     except Exception as e:
 
-        return {
-            "success": False,
-            "tool": tool_name,
-            "message": (
-                f"Failed to execute tool '{tool_name}'"
-            ),
-            "error": str(e)
-        }
+#         return {
+#             "success": False,
+#             "tool": tool_name,
+#             "message": (
+#                 f"Failed to execute tool '{tool_name}'"
+#             ),
+#             "error": str(e)
+#         }
 
 
 # ============================================================

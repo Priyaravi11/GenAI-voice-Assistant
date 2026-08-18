@@ -8,6 +8,16 @@ export type AppView =
   | "analytics"
   | "agents";
 
+export type AuthSession = {
+  session_id: string;
+  language: string;
+  customer_id: string | null;
+  status: string;
+  account_id: string;
+  account_status?: string | null;
+  connection_status?: string | null;
+};
+
 export type CallStatus = "Resolved" | "Escalated" | "Failed" | "Monitoring";
 
 export type TranscriptEntry = {

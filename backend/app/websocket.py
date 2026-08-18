@@ -5,19 +5,19 @@ File: backend/app/websocket.py
 Coordinates real-time bidirectional communication between the frontend and
 the backend orchestrator.
 
-Supports TWO modes:
-1. TEXT MODE - Traditional text queries (used for now)
-2. AUDIO MODE - Real-time audio streaming with Gemini Live (available)
+Supports two demo-friendly modes:
+1. TEXT MODE - Traditional text queries
+2. RECORDED AUDIO MODE - Browser records a clip, then sends it for transcription
 
 Responsibilities:
 1. Accept WebSocket connections
 2. Receive client messages (text queries, audio streams, control events)
-3. Forward requests to the orchestrator or Gemini Live
-4. Return structured events (responses, sources, status, audio)
+3. Forward requests to the orchestrator
+4. Return structured events (responses, sources, status, transcript)
 5. Handle disconnects and errors gracefully
 6. Maintain session context
 7. Support multi-turn conversation
-8. Stream audio in real-time
+8. Process recorded audio clips
 
 Message Format (Client → Server):
 
@@ -35,13 +35,13 @@ AUDIO MODE:
     "type": "audio_chunk" | "audio_start" | "audio_end",
     "session_id": "...",
     "data": "base64_encoded_audio_bytes",
-    "mime_type": "audio/wav"
+    "mime_type": "audio/webm"
 }
 
 Response Format (Server → Client):
 {
     "type": "assistant_response" | "rag_source" | "tool_execution" | 
-            "escalation" | "error" | "audio_response" | "audio_transcript",
+            "escalation" | "error" | "audio_transcript",
     "session_id": "...",
     "content": "...",
     "confidence": 0.95,
@@ -51,25 +51,18 @@ Response Format (Server → Client):
 """
 
 import json
-import logging
 from typing import Any, Dict, Optional
-import uuid
 import base64
-import asyncio
 
-from fastapi import APIRouter, WebSocketException, status
+from fastapi import APIRouter, status
 from fastapi.websockets import WebSocket
-from starlette.websockets import WebSocketDisconnect
+from starlette.websockets import WebSocketDisconnect, WebSocketState
 
 from backend.app.context import get_or_create_session, remove_session
+from backend.app.gemini import transcribe_audio
 from backend.app.orchestrator import orchestrator
 from backend.app.validation import validate_session_id, validate_language
 from backend.app.logger import get_logger
-from backend.app.gemini_live import (
-    create_live_session,
-    get_live_session,
-    close_live_session,
-)
 
 logger = get_logger(__name__)
 
@@ -114,18 +107,44 @@ class ConnectionManager:
         self,
         session_id: str,
         message: Dict[str, Any],
-    ) -> None:
+    ) -> bool:
         """Send a message to a specific session."""
-        if session_id in self.active_connections:
-            ws = self.active_connections[session_id]
-            try:
-                await ws.send_json(message)
-            except Exception as e:
-                logger.error(f"Failed to send message to {session_id}: {str(e)}")
+        ws = self.active_connections.get(session_id)
+
+        if not ws:
+            return False
+
+        if (
+            ws.client_state != WebSocketState.CONNECTED
+            or ws.application_state != WebSocketState.CONNECTED
+        ):
+            logger.debug(
+                f"Skipping send to disconnected WebSocket: {session_id}"
+            )
+            return False
+
+        try:
+            await ws.send_json(message)
+            return True
+        except RuntimeError as e:
+            logger.info(
+                f"WebSocket send skipped after disconnect: {session_id} | {str(e)}"
+            )
+            return False
+        except Exception as e:
+            logger.warning(
+                f"Failed to send message to {session_id}: {str(e)}"
+            )
+            return False
 
     def is_connected(self, session_id: str) -> bool:
         """Check if a session is connected."""
-        return session_id in self.active_connections
+        ws = self.active_connections.get(session_id)
+        return bool(
+            ws
+            and ws.client_state == WebSocketState.CONNECTED
+            and ws.application_state == WebSocketState.CONNECTED
+        )
 
 
 manager = ConnectionManager()
@@ -285,6 +304,7 @@ async def websocket_endpoint(
 
             elif message_type == "end_call":
                 await _handle_end_call(session_id=session_id)
+                break
 
             elif message_type == "get_status":
                 await _handle_get_status(session_id=session_id)
@@ -510,14 +530,13 @@ async def _handle_start_call(
 
 async def _handle_end_call(session_id: str) -> None:
     """
-    Handle call end event.
-
-    Gracefully closes the session.
+    Completely terminate the call session.
     """
 
     logger.info(f"Call ended: {session_id}")
 
     context = manager.session_contexts.get(session_id)
+
     if context:
         context.close()
 
@@ -530,11 +549,10 @@ async def _handle_end_call(session_id: str) -> None:
         },
     )
 
-    # Close the connection
     ws = manager.active_connections.get(session_id)
-    if ws:
-        await ws.close()
 
+    if ws and manager.is_connected(session_id):
+        await ws.close()
 
 async def _handle_get_status(session_id: str) -> None:
     """
@@ -561,7 +579,7 @@ async def _handle_get_status(session_id: str) -> None:
 
 
 # ============================================================
-# AUDIO STREAMING HANDLERS (Gemini Live)
+# RECORDED AUDIO HANDLERS
 # ============================================================
 
 async def _handle_audio_start(
@@ -569,82 +587,40 @@ async def _handle_audio_start(
     language: str,
     customer_id: Optional[str],
 ) -> None:
-    """
-    Handle audio stream start.
 
-    Initializes Gemini Live session for real-time audio streaming.
-    """
+    logger.info(
+        f"Audio recording started: {session_id} | {language}"
+    )
 
-    logger.info(f"Audio stream started: {session_id} | {language}")
+    context = manager.session_contexts.get(session_id)
 
-    try:
-        # Create Gemini Live session
-        live_session = await create_live_session(session_id, language)
-
-        if not live_session:
-            await manager.send_personal(
-                session_id,
-                {
-                    "type": "error",
-                    "error": "Failed to initialize Gemini Live session",
-                },
-            )
-            return
-
-        # Send confirmation
-        await manager.send_personal(
-            session_id,
-            {
-                "type": "audio_stream_ready",
-                "session_id": session_id,
-                "message": "Audio stream ready. Listening...",
-            },
+    if context:
+        context.update(
+            language=language,
+            customer_id=customer_id,
         )
 
-        # Start receiving responses in background
-        asyncio.create_task(
-            _audio_response_handler(session_id)
-        )
-
-    except Exception as e:
-        logger.error(f"Error starting audio stream: {str(e)}")
-        await manager.send_personal(
-            session_id,
-            {
-                "type": "error",
-                "error": f"Failed to start audio stream: {str(e)}",
-            },
-        )
-
+    await manager.send_personal(
+        session_id,
+        {
+            "type": "audio_stream_ready",
+            "session_id": session_id,
+            "message": "Recording ready. Speak, then stop to submit.",
+        },
+    )
 
 async def _handle_audio_chunk(
     session_id: str,
     audio_data: str,
-    mime_type: str = "audio/wav",
+    mime_type: str = "audio/webm",
 ) -> None:
     """
-    Handle incoming audio chunk.
-
-    Routes audio to Gemini Live session.
+    Handle a complete recorded audio clip.
     """
 
     try:
-        # Get Gemini Live session
-        live_session = await get_live_session(session_id)
-
-        if not live_session:
-            await manager.send_personal(
-                session_id,
-                {
-                    "type": "error",
-                    "error": "Audio stream not initialized",
-                },
-            )
-            return
-
-        # Decode base64 audio
         try:
-            audio_bytes = base64.b64decode(audio_data)
+            audio_bytes = base64.b64decode(audio_data, validate=True)
         except Exception as e:
             logger.error(f"Failed to decode audio: {str(e)}")
             await manager.send_personal(
@@ -656,174 +632,80 @@ async def _handle_audio_chunk(
             )
             return
 
-        # Send to Gemini Live
-        logger.info(
-            f"Audio frame received: session={session_id} | "
-            f"bytes={len(audio_bytes)} | mime_type={mime_type}"
-        )
-
-        success = await live_session.send_audio(audio_bytes, mime_type)
-
-        if not success:
+        if not audio_bytes:
             await manager.send_personal(
                 session_id,
                 {
                     "type": "error",
-                    "error": "Failed to send audio to Gemini Live",
+                    "error": "Recorded audio is empty",
                 },
             )
+            return
+
+        logger.info(
+            f"Recorded audio received: session={session_id} | "
+            f"bytes={len(audio_bytes)} | mime_type={mime_type}"
+        )
+
+        await manager.send_personal(
+            session_id,
+            {
+                "type": "status",
+                "status": "processing",
+                "message": "Transcribing recorded audio...",
+            },
+        )
+
+        transcript = await transcribe_audio(audio_bytes, mime_type)
+
+        await manager.send_personal(
+            session_id,
+            {
+                "type": "transcript",
+                "speaker": "customer",
+                "content": transcript,
+            },
+        )
+
+        await _process_audio_transcript(
+            session_id=session_id,
+            transcript=transcript,
+        )
 
     except Exception as e:
-        logger.error(f"Error handling audio chunk: {str(e)}")
+        logger.error(f"Error handling recorded audio: {str(e)}", exc_info=True)
         await manager.send_personal(
             session_id,
             {
                 "type": "error",
-                "error": f"Audio processing error: {str(e)}",
+                "error": f"Recorded audio processing error: {str(e)}",
             },
         )
 
 
 async def _handle_audio_end(session_id: str) -> None:
     """
-    Handle audio stream end.
-
-    Closes Gemini Live session gracefully.
+    Acknowledge the end of a local recording.
     """
 
-    logger.info(f"Audio stream ended: {session_id}")
+    logger.info(f"Audio recording ended: {session_id}")
 
-    try:
-        await close_live_session(session_id)
-
-        await manager.send_personal(
-            session_id,
-            {
-                "type": "audio_stream_closed",
-                "session_id": session_id,
-                "message": "Audio stream closed",
-            },
-        )
-
-    except Exception as e:
-        logger.error(f"Error ending audio stream: {str(e)}")
-
-
-async def _audio_response_handler(session_id: str) -> None:
-    """
-    Background task to receive and forward Gemini Live responses.
-
-    Runs continuously while audio stream is active.
-    """
-
-    try:
-        live_session = await get_live_session(session_id)
-
-        if not live_session:
-            logger.error(f"Live session not found: {session_id}")
-            return
-
-        pending_input_transcript = ""
-
-        async for response in live_session.receive_response():
-            if not manager.is_connected(session_id):
-                logger.info(f"Client disconnected: {session_id}")
-                break
-
-            response_type = response.get("type", "unknown")
-
-            if response_type == "audio":
-                # Encode audio to base64 for transmission
-                audio_b64 = base64.b64encode(response["content"]).decode()
-
-                await manager.send_personal(
-                    session_id,
-                    {
-                        "type": "audio_response",
-                        "data": audio_b64,
-                        "mime_type": response.get("mime_type", "audio/wav"),
-                    },
-                )
-
-            elif response_type == "input_transcript":
-                transcript = response.get("content", "").strip()
-                if transcript:
-                    pending_input_transcript = transcript
-                    await manager.send_personal(
-                        session_id,
-                        {
-                            "type": "transcript",
-                            "speaker": "customer",
-                            "content": transcript,
-                        },
-                    )
-
-            elif response_type == "output_transcript":
-                transcript = response.get("content", "").strip()
-                if transcript:
-                    await manager.send_personal(
-                        session_id,
-                        {
-                            "type": "transcript",
-                            "speaker": "assistant",
-                            "content": transcript,
-                        },
-                    )
-
-            elif response_type == "text":
-                await manager.send_personal(
-                    session_id,
-                    {
-                        "type": "audio_transcript",
-                        "content": response["content"],
-                    },
-                )
-
-            elif response_type == "turn_complete":
-                if pending_input_transcript:
-                    await _process_audio_transcript(
-                        session_id=session_id,
-                        transcript=pending_input_transcript,
-                    )
-                    pending_input_transcript = ""
-
-                await manager.send_personal(
-                    session_id,
-                    {
-                        "type": "turn_complete",
-                        "message": "Waiting for user input...",
-                    },
-                )
-
-            elif response_type == "error":
-                await manager.send_personal(
-                    session_id,
-                    {
-                        "type": "error",
-                        "error": response["content"],
-                    },
-                )
-
-    except asyncio.CancelledError:
-        logger.info(f"Audio response handler cancelled: {session_id}")
-    except Exception as e:
-        logger.error(f"Error in audio response handler: {str(e)}")
-        await manager.send_personal(
-            session_id,
-            {
-                "type": "error",
-                "error": f"Audio stream error: {str(e)}",
-            },
-        )
-
+    await manager.send_personal(
+        session_id,
+        {
+            "type": "audio_input_ended",
+            "session_id": session_id,
+            "message": "Audio input ended.",
+        },
+    )
 
 async def _process_audio_transcript(
     session_id: str,
     transcript: str,
 ) -> None:
     """
-    Route a Gemini Live input transcript through the standard text
-    orchestrator so voice calls use Supervisor, RAG, and tools.
+    Route a recorded-audio transcript through the standard text
+    orchestrator so demo voice calls use Supervisor, RAG, and tools.
     """
 
     context = manager.session_contexts.get(session_id)

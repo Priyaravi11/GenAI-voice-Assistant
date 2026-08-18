@@ -584,10 +584,65 @@ Give only the final customer-facing answer.
                 exc,
             )
 
-        return (
-            "I'm sorry, I couldn't generate a billing "
-            "response right now."
+        return self._build_fallback_response(
+            query=query,
+            billing_data=billing_data,
         )
+
+    # ==========================================================
+    # FALLBACK RESPONSE
+    # ==========================================================
+
+    @staticmethod
+    def _build_fallback_response(
+        query: str,
+        billing_data: Any,
+    ) -> str:
+        if isinstance(billing_data, dict):
+            if billing_data.get("requires_customer_id"):
+                return "Please provide your customer ID so I can check your billing details."
+
+            if not billing_data.get("success", False):
+                return (
+                    billing_data.get("message")
+                    or "I could not find billing information for that customer."
+                )
+
+            data = billing_data.get("data")
+
+            if isinstance(data, dict):
+                bill = data.get("data") if isinstance(data.get("data"), dict) else data
+                amount = bill.get("amount") or bill.get("bill_amount")
+                due_date = bill.get("due_date") or bill.get("bill_due_date")
+                bill_date = bill.get("bill_date")
+                status = bill.get("status") or bill.get("payment_status")
+                bill_id = bill.get("bill_id") or bill.get("invoice_id")
+
+                details = []
+                if amount is not None:
+                    details.append(f"amount is {amount}")
+                if due_date:
+                    details.append(f"due date is {due_date}")
+                if status:
+                    details.append(f"status is {status}")
+                if bill_date:
+                    details.append(f"bill date is {bill_date}")
+
+                if details:
+                    prefix = f"For bill {bill_id}, the " if bill_id else "Your current bill "
+                    return prefix + ", ".join(details) + "."
+
+                message = data.get("message")
+                if message:
+                    return message
+
+            if isinstance(data, list):
+                return f"I found {len(data)} billing record(s) for your account."
+
+        if "bill" in query.lower():
+            return "I can help with billing, but I need a valid customer ID to look up account-specific bill details."
+
+        return "I can help with billing questions. Please share your customer ID or ask about your current bill."
 
     # ==========================================================
     # ERROR RESPONSE

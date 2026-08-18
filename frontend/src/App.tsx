@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState, lazy, Suspense } from "react";
-import type { AppView, ThemePreference } from "./types";
+import type { AppView, AuthSession, ThemePreference } from "./types";
 
 // Lazy-loaded pages for code splitting
 const Dashboard = lazy(() => import("./pages/Dashboard/Dashboard"));
@@ -7,6 +7,7 @@ const LiveCall = lazy(() => import("./pages/LiveCall/LiveCall"));
 const CallLogs = lazy(() => import("./pages/CallLogs/CallLogs"));
 const Analytics = lazy(() => import("./pages/Analytics/Analytics"));
 const HumanAgent = lazy(() => import("./pages/HumanAgent/HumanAgent"));
+const Login = lazy(() => import("./pages/Login/Login"));
 
 // Simple loading fallback component
 const PageLoader = () => (
@@ -39,6 +40,17 @@ function getSystemTheme() {
 }
 
 function App() {
+  const [authSession, setAuthSession] = useState<AuthSession | null>(() => {
+    const saved = localStorage.getItem("voiceai-session");
+    if (!saved) return null;
+
+    try {
+      return JSON.parse(saved) as AuthSession;
+    } catch {
+      localStorage.removeItem("voiceai-session");
+      return null;
+    }
+  });
   const [activeView, setActiveView] = useState<AppView>("dashboard");
   const [themePreference, setThemePreference] = useState<ThemePreference>(() => {
     const saved = localStorage.getItem("voiceai-theme");
@@ -63,14 +75,42 @@ function App() {
     return () => query.removeEventListener("change", handleChange);
   }, []);
 
+  function handleLogin(session: AuthSession) {
+    localStorage.setItem("voiceai-session", JSON.stringify(session));
+    setAuthSession(session);
+  }
+
+  function handleLogout() {
+    localStorage.removeItem("voiceai-session");
+    setAuthSession(null);
+    setActiveView("dashboard");
+  }
+
   const page = useMemo(() => {
-    if (activeView === "live") return <Suspense fallback={<PageLoader />}><LiveCall /></Suspense>;
+    if (activeView === "live") {
+      return (
+        <Suspense fallback={<PageLoader />}>
+          <LiveCall
+            authSession={authSession ?? undefined}
+            onEndCall={handleLogout}
+          />
+        </Suspense>
+      );
+    }
     if (activeView === "logs") return <Suspense fallback={<PageLoader />}><CallLogs /></Suspense>;
     if (activeView === "analytics") return <Suspense fallback={<PageLoader />}><Analytics /></Suspense>;
     if (activeView === "agents") return <Suspense fallback={<PageLoader />}><HumanAgent /></Suspense>;
     if (activeView === "config") return <Suspense fallback={<PageLoader />}><HumanAgent mode="config" /></Suspense>;
     return <Suspense fallback={<PageLoader />}><Dashboard onNavigate={setActiveView} /></Suspense>;
-  }, [activeView]);
+  }, [activeView, authSession]);
+
+  if (!authSession) {
+    return (
+      <Suspense fallback={<PageLoader />}>
+        <Login onLogin={handleLogin} />
+      </Suspense>
+    );
+  }
 
   return (
     <main className="app-shell">
@@ -122,7 +162,7 @@ function App() {
           <span>AP</span>
           <div>
             <strong>Apex Telecom</strong>
-            <small>Enterprise Operations</small>
+            <small>{authSession.customer_id} / {authSession.account_id}</small>
           </div>
         </footer>
       </aside>
@@ -151,6 +191,9 @@ function App() {
               onClick={() => setActiveView("live")}
             >
               ☎ Start Call
+            </button>
+            <button type="button" className="icon-button logout-button" aria-label="Log out" onClick={handleLogout}>
+              Log out
             </button>
             <div className="theme-toggle" aria-label="Theme preference">
               {(["dark", "light", "system"] as ThemePreference[]).map((theme) => (

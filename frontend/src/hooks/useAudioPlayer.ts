@@ -2,7 +2,7 @@
  * Audio Player Hook
  * File: frontend/src/hooks/useAudioPlayer.ts
  * 
- * Plays audio responses from Gemini Live:
+ * Plays base64 audio responses when a provider returns synthesized audio:
  * - Decodes base64 audio
  * - Streams to audio context
  * - Provides playback controls

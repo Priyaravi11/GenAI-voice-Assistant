@@ -5,10 +5,10 @@ from backend.app.context import (
     get_session,
     remove_session,
 )
-from backend.app.models import SessionCreate, SessionResponse
+from backend.app.database import accounts_collection
+from backend.app.models import LoginRequest, LoginResponse, SessionCreate, SessionResponse
 from backend.app.validation import (
     validate_customer_id,
-    validate_language,
     validate_session_id,
 )
 
@@ -18,6 +18,76 @@ router = APIRouter(
 )
 
 
+@router.post("/login", response_model=LoginResponse)
+async def login(request: LoginRequest):
+    """
+    Validate a customer account and create an active session.
+    """
+
+    try:
+        customer_id = validate_customer_id(request.cust_id)
+        account_id = request.account_id.strip()
+
+        if not account_id:
+            raise ValueError("Account ID cannot be empty.")
+
+        account_document = accounts_collection.find_one(
+            {
+                "accounts": {
+                    "$elemMatch": {
+                        "cust_id": customer_id,
+                        "account_id": account_id,
+                    }
+                }
+            },
+            {"accounts.$": 1},
+        )
+
+        if not account_document or not account_document.get("accounts"):
+            raise HTTPException(
+                status_code=401,
+                detail="Invalid customer ID or account ID.",
+            )
+
+        account = account_document["accounts"][0]
+
+        if account.get("account_status") != "active":
+            raise HTTPException(
+                status_code=403,
+                detail="Account is not active.",
+            )
+
+        import uuid
+
+        context = create_session(
+            session_id=str(uuid.uuid4()),
+            customer_id=customer_id,
+            language="en",
+        )
+
+        context.update(
+            account_id=account_id,
+            account_type=account.get("account_type"),
+            connection_status=account.get("connection_status"),
+        )
+
+        return LoginResponse(
+            session_id=context.session_id,
+            language=context.language,
+            customer_id=context.customer_id,
+            status=context.status,
+            account_id=account_id,
+            account_status=account.get("account_status"),
+            connection_status=account.get("connection_status"),
+        )
+
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=str(exc),
+        )
+
+
 @router.post("", response_model=SessionResponse)
 async def create_new_session(request: SessionCreate):
     """
@@ -25,6 +95,8 @@ async def create_new_session(request: SessionCreate):
     """
 
     try:
+        from backend.app.validation import validate_language
+
         language = validate_language(request.language)
         customer_id = validate_customer_id(request.customer_id)
 

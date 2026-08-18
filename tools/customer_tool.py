@@ -210,10 +210,6 @@ def get_customer_plan(cust_id: str):
             }
         )
 
-        # ----------------------------------------------------
-        # Customer not found
-        # ----------------------------------------------------
-
         if account_document is None:
             return {
                 "success": False,
@@ -225,13 +221,14 @@ def get_customer_plan(cust_id: str):
         # Find customer's account
         # ----------------------------------------------------
 
-        customer_account = None
-
-        for account in account_document.get("accounts", []):
-
-            if account.get("cust_id") == cust_id:
-                customer_account = account
-                break
+        customer_account = next(
+            (
+                account
+                for account in account_document.get("accounts", [])
+                if account.get("cust_id") == cust_id
+            ),
+            None
+        )
 
         if customer_account is None:
             return {
@@ -254,23 +251,45 @@ def get_customer_plan(cust_id: str):
             }
 
         # ----------------------------------------------------
-        # Find plan details
+        # Find plan inside plans array
         # ----------------------------------------------------
 
         plan_document = db["telecom_plans"].find_one(
             {
-                "plan_id": plan_id
+                "plans": {
+                    "$elemMatch": {
+                        "plan_id": plan_id
+                    }
+                }
             },
             {
-                "_id": 0
+                "_id": 0,
+                "plans": 1
             }
         )
 
+        if plan_document is None:
+            return {
+                "success": False,
+                "customer_id": cust_id,
+                "plan_id": plan_id,
+                "message": f"No plan found for plan ID {plan_id}"
+            }
+
         # ----------------------------------------------------
-        # Plan not found
+        # Extract matching plan
         # ----------------------------------------------------
 
-        if plan_document is None:
+        customer_plan = next(
+            (
+                plan
+                for plan in plan_document.get("plans", [])
+                if plan.get("plan_id") == plan_id
+            ),
+            None
+        )
+
+        if customer_plan is None:
             return {
                 "success": False,
                 "customer_id": cust_id,
@@ -287,7 +306,7 @@ def get_customer_plan(cust_id: str):
             "customer_id": cust_id,
             "plan_id": plan_id,
             "message": "Customer plan retrieved successfully",
-            "data": plan_document
+            "data": customer_plan
         }
 
     except Exception as e:

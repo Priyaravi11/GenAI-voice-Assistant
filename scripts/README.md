@@ -401,7 +401,7 @@ python scripts/seed_mongodb.py
 ### Task 4: New Document Ingestion
 
 ```bash
-# Place documents in database/docs/
+# Place documents in rag/data/raw/
 
 # Ingest with dry-run first
 python scripts/ingest_rag.py --dry-run
@@ -419,18 +419,20 @@ Required in `.env` file:
 ```env
 # MongoDB
 MONGODB_URI=mongodb://localhost:27017
-MONGODB_DB=genai_voice_assistant
+MONGODB_DATABASE=telecom_db
 
 # Gemini API
 GEMINI_API_KEY=your-api-key
-GEMINI_MODEL=gemini-1.5-pro
+GEMINI_LIVE_MODEL=gemini-3.1-flash-live-preview
+GEMINI_TEXT_MODELS=gemini-2.5-flash,gemini-2.0-flash
 
 # Server
-BACKEND_PORT=8000
-BACKEND_HOST=0.0.0.0
+PORT=8000
+HOST=0.0.0.0
 
 # Chroma
-CHROMA_COLLECTION=billing_docs
+CHROMA_PATH=rag/data/chroma
+CHROMA_COLLECTION=telecom_knowledge
 ```
 
 ---

@@ -1,17 +1,17 @@
 # GenAI Voice Assistant
 
-A full-stack GenAI voice assistant project with a Python backend, a Vite/React frontend, RAG components, tool integrations, and seed data for local development.
+A full-stack multilingual telecom voice assistant. The project follows the architecture in the supplied pipeline image: React captures the call UI and audio stream, FastAPI handles WebSocket traffic, Gemini Live generates voice responses, RAG retrieves policy/FAQ/plan/technical knowledge from ChromaDB, MongoDB-backed tools fetch customer data, and escalation routes complex cases to a human-agent queue.
 
 ## Project Structure
 
 ```text
-backend/    Python API, agents, tools, WebSocket, and orchestration code
-frontend/   Vite/React client application
-rag/        RAG ingestion, chunking, embedding, and indexing utilities
-database/   Seed data for local development
-scripts/    Utility scripts for seeding and running the app
-tests/      Backend test suite
-docs/       Architecture and design documentation
+backend/      FastAPI API, WebSocket, Gemini Live, orchestration, agents, and tool registry
+frontend/     Vite/React voice UI, language selector, transcript, and call controls
+rag/          RAG ingestion, embeddings, retrieval, context assembly, and ChromaDB client
+tools/        Telecom tool implementations used by backend/app/tools.py
+scripts/      Local setup helpers for MongoDB seeding, RAG ingestion, and dev startup
+tests/        Backend and RAG test suite
+docs/         Architecture, API contract, RAG, tool, Gemini Live, and escalation docs
 ```
 
 ## Requirements
@@ -28,6 +28,19 @@ Create a local environment file:
 cp .env.example .env
 ```
 
+Update these values in `.env`:
+
+```env
+GEMINI_API_KEY=your_real_google_ai_studio_key
+GEMINI_LIVE_MODEL=gemini-3.1-flash-live-preview
+GEMINI_TEXT_MODELS=gemini-2.5-flash,gemini-2.0-flash
+MONGODB_URI=mongodb://localhost:27017
+MONGODB_DATABASE=telecom_db
+CHROMA_PATH=rag/data/chroma
+CHROMA_COLLECTION=telecom_knowledge
+FRONTEND_URL=http://localhost:5173
+```
+
 Install Python dependencies:
 
 ```bash
@@ -41,6 +54,18 @@ Install frontend dependencies:
 ```bash
 cd frontend
 npm install
+```
+
+Seed local data for the tool path:
+
+```bash
+python scripts/seed_mongodb.py --clear
+```
+
+Build the RAG index for the knowledge path:
+
+```bash
+python scripts/ingest_rag.py
 ```
 
 ## Run Locally

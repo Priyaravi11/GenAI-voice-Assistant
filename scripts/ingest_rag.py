@@ -310,7 +310,7 @@ class RAGIngestor:
         return True
 
 
-def create_sample_docs(output_dir: str = "database/sample_docs") -> None:
+def create_sample_docs(output_dir: str = "rag/data/raw/sample_docs") -> None:
     """Create sample documents for testing."""
     Path(output_dir).mkdir(parents=True, exist_ok=True)
     

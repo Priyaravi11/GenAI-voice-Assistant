@@ -21,11 +21,11 @@ const VoiceInterface = React.memo(function VoiceInterface({ active, language, on
         </div>
       </div>
       <div className="voice-meta">
-        <p className="eyebrow">Gemini Live Session</p>
-        <h2>{language} conversation stream</h2>
+        <p className="eyebrow">Recorded Voice Demo</p>
+        <h2>{language} conversation review</h2>
         <p>
-          Real-time ASR, multilingual intent detection, RAG grounding, and
-          tool execution are active for this simulated customer call.
+          Record a customer question, transcribe it, then run multilingual
+          intent detection, RAG grounding, and tool execution.
         </p>
         <VoiceButton active={active} onToggle={onToggle} />
       </div>

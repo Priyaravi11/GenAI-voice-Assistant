@@ -2,6 +2,97 @@
 
 button,input,select{font:inherit;border:1px solid var(--line);color:var(--text);background:var(--surface)}button{cursor:pointer;transition:160ms ease;transition-property:transform,border-color,background,color,box-shadow}button:hover{transform:translateY(-1px);border-color:color-mix(in srgb,var(--brand) 54%,var(--line))}button:focus-visible,select:focus-visible,input:focus-visible{outline:3px solid color-mix(in srgb,var(--cyan) 34%,transparent);outline-offset:2px}h1,h2,h3,p{margin:0}
 
+.login-screen {
+  display: grid;
+  min-height: 100vh;
+  place-items: center;
+  padding: 24px;
+}
+
+.login-panel {
+  display: grid;
+  grid-template-columns: minmax(260px, 0.85fr) minmax(320px, 1fr);
+  width: min(920px, 100%);
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+
+.login-brand {
+  display: flex;
+  align-items: end;
+  gap: 14px;
+  min-height: 520px;
+  padding: 28px;
+  color: #ffffff;
+  background:
+    linear-gradient(135deg, color-mix(in srgb, var(--brand) 80%, #111111), color-mix(in srgb, var(--cyan) 52%, #10323b)),
+    var(--brand);
+}
+
+.login-brand > span {
+  display: grid;
+  width: 54px;
+  aspect-ratio: 1;
+  place-items: center;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.18);
+  font-weight: 1000;
+}
+
+.login-brand strong,
+.login-brand small {
+  display: block;
+}
+
+.login-brand small {
+  color: rgba(255, 255, 255, 0.76);
+}
+
+.login-form {
+  display: grid;
+  align-content: center;
+  gap: 18px;
+  padding: 42px;
+}
+
+.login-form h1 {
+  margin-top: 8px;
+  font-size: clamp(1.65rem, 3vw, 2.65rem);
+  line-height: 1.05;
+}
+
+.login-form label {
+  display: grid;
+  gap: 8px;
+  color: var(--muted);
+  font-weight: 900;
+}
+
+.login-form input,
+.login-form select {
+  min-height: 46px;
+  width: 100%;
+  padding: 0 14px;
+  border-radius: 10px;
+}
+
+.login-form .primary-button {
+  min-height: 46px;
+}
+
+.login-form .primary-button:disabled {
+  cursor: progress;
+  opacity: 0.72;
+}
+
+.login-error {
+  color: var(--danger);
+  font-weight: 800;
+}
+
 .app-shell {
   display: grid;
   grid-template-columns: 292px minmax(0, 1fr);
@@ -1781,6 +1872,18 @@ button,input,select{font:inherit;border:1px solid var(--line);color:var(--text);
 }
 
 @media (max-width: 620px) {
+  .login-panel {
+    grid-template-columns: 1fr;
+  }
+
+  .login-brand {
+    min-height: 180px;
+  }
+
+  .login-form {
+    padding: 24px;
+  }
+
   .app-main,
   .side-rail {
     padding: 16px;

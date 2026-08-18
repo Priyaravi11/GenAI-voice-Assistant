@@ -19,49 +19,87 @@ from backend.app.database import payments_collection
 
 
 # ============================================================
+# HELPER
+# Get all payments belonging to a customer
+# ============================================================
+
+def _get_customer_payments(cust_id: str):
+    """
+    Retrieve all payment records belonging to a customer.
+
+    Database structure:
+    {
+        "_id": ...,
+        "metadata": {...},
+        "payments": [
+            {...},
+            {...}
+        ]
+    }
+    """
+
+    document = payments_collection.find_one(
+        {
+            "payments": {
+                "$elemMatch": {
+                    "cust_id": cust_id
+                }
+            }
+        },
+        {
+            "_id": 0,
+            "payments": 1
+        }
+    )
+
+    if document is None:
+        return []
+
+    payments = document.get("payments", [])
+
+    customer_payments = [
+        payment
+        for payment in payments
+        if payment.get("cust_id") == cust_id
+    ]
+
+    # Sort newest payment first
+    customer_payments.sort(
+        key=lambda payment: payment.get("payment_date", ""),
+        reverse=True
+    )
+
+    return customer_payments
+
+
+# ============================================================
 # PAYMENT TOOL 1
 # Get Payment Status
 # ============================================================
 
 def get_payment_status(cust_id: str):
     """
-    Retrieve the latest payment status for a customer.
+    Retrieve the status of the customer's latest payment.
     """
 
     try:
 
-        latest_payment = payments_collection.find_one(
-            {
-                "cust_id": cust_id
-            },
-            {
-                "_id": 0,
-                "payment_id": 1,
-                "cust_id": 1,
-                "amount": 1,
-                "payment_date": 1,
-                "status": 1,
-                "payment_method": 1,
-                "transaction_id": 1,
-                "failure_reason": 1
-            },
-            sort=[
-                ("payment_date", -1)
-            ]
-        )
+        customer_payments = _get_customer_payments(cust_id)
 
-        if latest_payment is None:
-
+        if not customer_payments:
             return {
                 "success": False,
                 "customer_id": cust_id,
                 "message": f"No payment record found for customer {cust_id}"
             }
 
+        latest_payment = customer_payments[0]
+
         return {
             "success": True,
             "customer_id": cust_id,
             "message": "Payment status retrieved successfully",
+            "status": latest_payment.get("status"),
             "data": latest_payment
         }
 
@@ -87,37 +125,9 @@ def get_payment_history(cust_id: str):
 
     try:
 
-        payment_history = list(
-            payments_collection.find(
-                {
-                    "cust_id": cust_id
-                },
-                {
-                    "_id": 0,
-                    "payment_id": 1,
-                    "cust_id": 1,
-                    "account_id": 1,
-                    "bill_id": 1,
-                    "amount": 1,
-                    "payment_method": 1,
-                    "payment_date": 1,
-                    "status": 1,
-                    "transaction_id": 1,
-                    "failure_reason": 1,
-                    "auto_pay": 1,
-                    "auto_debit_status": 1,
-                    "late_fee": 1,
-                    "bounced_charge": 1,
-                    "created_at": 1
-                }
-            ).sort(
-                "payment_date",
-                -1
-            )
-        )
+        customer_payments = _get_customer_payments(cust_id)
 
-        if not payment_history:
-
+        if not customer_payments:
             return {
                 "success": False,
                 "customer_id": cust_id,
@@ -128,8 +138,8 @@ def get_payment_history(cust_id: str):
             "success": True,
             "customer_id": cust_id,
             "message": "Payment history retrieved successfully",
-            "count": len(payment_history),
-            "data": payment_history
+            "count": len(customer_payments),
+            "data": customer_payments
         }
 
     except Exception as e:
@@ -154,40 +164,16 @@ def get_latest_payment(cust_id: str):
 
     try:
 
-        latest_payment = payments_collection.find_one(
-            {
-                "cust_id": cust_id
-            },
-            {
-                "_id": 0,
-                "payment_id": 1,
-                "cust_id": 1,
-                "account_id": 1,
-                "bill_id": 1,
-                "amount": 1,
-                "payment_method": 1,
-                "payment_date": 1,
-                "status": 1,
-                "transaction_id": 1,
-                "failure_reason": 1,
-                "auto_pay": 1,
-                "auto_debit_status": 1,
-                "late_fee": 1,
-                "bounced_charge": 1,
-                "created_at": 1
-            },
-            sort=[
-                ("payment_date", -1)
-            ]
-        )
+        customer_payments = _get_customer_payments(cust_id)
 
-        if latest_payment is None:
-
+        if not customer_payments:
             return {
                 "success": False,
                 "customer_id": cust_id,
                 "message": f"No payment record found for customer {cust_id}"
             }
+
+        latest_payment = customer_payments[0]
 
         return {
             "success": True,
@@ -214,46 +200,31 @@ def get_latest_payment(cust_id: str):
 def get_payment_issue(cust_id: str):
     """
     Check whether the customer's latest payment
-    is pending or failed.
+    is pending, failed, successful, or has an unknown status.
     """
 
     try:
 
-        latest_payment = payments_collection.find_one(
-            {
-                "cust_id": cust_id
-            },
-            {
-                "_id": 0,
-                "payment_id": 1,
-                "cust_id": 1,
-                "account_id": 1,
-                "bill_id": 1,
-                "amount": 1,
-                "payment_method": 1,
-                "payment_date": 1,
-                "status": 1,
-                "transaction_id": 1,
-                "failure_reason": 1
-            },
-            sort=[
-                ("payment_date", -1)
-            ]
-        )
+        customer_payments = _get_customer_payments(cust_id)
 
-        if latest_payment is None:
-
+        if not customer_payments:
             return {
                 "success": False,
                 "customer_id": cust_id,
                 "message": f"No payment record found for customer {cust_id}"
             }
 
-        status = latest_payment.get("status")
+        latest_payment = customer_payments[0]
 
-        # Pending payment
+        status = str(
+            latest_payment.get("status", "")
+        ).strip().lower()
+
+        # ----------------------------------------------------
+        # Pending
+        # ----------------------------------------------------
+
         if status == "pending":
-
             return {
                 "success": True,
                 "customer_id": cust_id,
@@ -262,9 +233,11 @@ def get_payment_issue(cust_id: str):
                 "data": latest_payment
             }
 
-        # Failed payment
-        if status == "failed":
+        # ----------------------------------------------------
+        # Failed
+        # ----------------------------------------------------
 
+        if status == "failed":
             return {
                 "success": True,
                 "customer_id": cust_id,
@@ -273,9 +246,11 @@ def get_payment_issue(cust_id: str):
                 "data": latest_payment
             }
 
-        # Successful payment
-        if status == "successful":
+        # ----------------------------------------------------
+        # Successful
+        # ----------------------------------------------------
 
+        if status == "successful":
             return {
                 "success": True,
                 "customer_id": cust_id,
@@ -284,12 +259,15 @@ def get_payment_issue(cust_id: str):
                 "data": latest_payment
             }
 
+        # ----------------------------------------------------
         # Unknown status
+        # ----------------------------------------------------
+
         return {
             "success": True,
             "customer_id": cust_id,
             "issue": "unknown_payment_status",
-            "message": f"The latest payment has an unknown status: {status}",
+            "message": f"The latest payment has an unknown status: {latest_payment.get('status')}",
             "data": latest_payment
         }
 

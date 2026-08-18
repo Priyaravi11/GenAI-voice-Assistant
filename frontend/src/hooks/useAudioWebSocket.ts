@@ -2,7 +2,7 @@
  * Enhanced WebSocket Hook for Audio
  * File: frontend/src/hooks/useAudioWebSocket.ts
  * 
- * Manages WebSocket connection for real-time audio streaming
+ * Manages WebSocket connection for recorded audio submission
  */
 
 import { useEffect, useRef, useState, useCallback } from "react";
@@ -168,8 +168,8 @@ export function useAudioWebSocket(
     []
   );
 
-  // Send audio chunk
-  const sendAudioChunk = useCallback(
+  // Send one complete recorded audio clip
+  const sendAudioRecording = useCallback(
     (arrayBuffer: ArrayBuffer, mimeType = "audio/wav") => {
       if (!socketRef.current || socketRef.current.readyState !== WebSocket.OPEN) {
         console.error("WebSocket not connected");
@@ -195,6 +195,8 @@ export function useAudioWebSocket(
     },
     [sessionId]
   );
+
+  const sendAudioChunk = sendAudioRecording;
 
   // Start audio stream
   const startAudioStream = useCallback(
@@ -296,6 +298,7 @@ export function useAudioWebSocket(
     connect,
     disconnect,
     sendAudioChunk,
+    sendAudioRecording,
     startAudioStream,
     endAudioStream,
     startCall,

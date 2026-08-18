@@ -5,7 +5,10 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from backend.app.database import billing_collection
+from backend.app.database import (
+    billing_collection,
+    plans_collection,
+)
 
 
 # ============================================================

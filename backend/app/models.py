@@ -19,6 +19,17 @@ class SessionResponse(BaseModel):
     status: str = "active"
 
 
+class LoginRequest(BaseModel):
+    cust_id: str
+    account_id: str
+
+
+class LoginResponse(SessionResponse):
+    account_id: str
+    account_status: Optional[str] = None
+    connection_status: Optional[str] = None
+
+
 # -------------------------
 # Call Models
 # -------------------------

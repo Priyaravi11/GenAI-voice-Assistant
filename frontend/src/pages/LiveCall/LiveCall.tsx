@@ -3,7 +3,7 @@ import EndCall from "../../components/CallControls/EndCall";
 import { useAudioPlayer } from "../../hooks/useAudioPlayer";
 import { useAudioRecorder } from "../../hooks/useAudioRecorder";
 import { useAudioWebSocket } from "../../hooks/useAudioWebSocket";
-import type { TranscriptEntry } from "../../types";
+import type { AuthSession, TranscriptEntry } from "../../types";
 
 const presetQueries = [
   ["Bill Inquiry", "What is my current bill and due date?"],
@@ -26,13 +26,16 @@ const baseTranscript: TranscriptEntry[] = [
 ];
 
 type LiveCallProps = {
+  authSession?: AuthSession;
   onEndCall?: () => void;
   onOpenEscalationDesk?: () => void;
   isAdmin?: boolean;
 };
 
-function LiveCall({ onEndCall, onOpenEscalationDesk, isAdmin = false }: LiveCallProps) {
-  const sessionId = useMemo(() => `session-${Date.now()}`, []);
+function LiveCall({ authSession, onEndCall, onOpenEscalationDesk, isAdmin = false }: LiveCallProps) {
+  const fallbackSessionId = useMemo(() => `session-${Date.now()}`, []);
+  const sessionId = authSession?.session_id ?? fallbackSessionId;
+  const customerId = authSession?.customer_id ?? undefined;
   const [language, setLanguage] = useState("English (US)");
   const [inputText, setInputText] = useState("");
   const [isAnalyzing, setIsAnalyzing] = useState(false);
@@ -72,10 +75,6 @@ function LiveCall({ onEndCall, onOpenEscalationDesk, isAdmin = false }: LiveCall
   }, []);
 
   const socket = useAudioWebSocket(sessionId, {
-    onAudioResponse: (data, mimeType) => {
-      setVoiceStatus("Assistant speaking");
-      player.queueAudioChunk(data, mimeType);
-    },
     onTranscript: (text) => {
       if (!text.trim()) return;
       setIsAnalyzing(true);
@@ -124,7 +123,7 @@ function LiveCall({ onEndCall, onOpenEscalationDesk, isAdmin = false }: LiveCall
         confidence: Math.round((message.confidence ?? 0.7) * 100),
       });
     },
-    onReady: () => setVoiceStatus("Listening"),
+    onReady: () => setVoiceStatus("Recording ready"),
     onStreamClosed: () => setVoiceStatus("Idle"),
     onStatus: (message) => {
       if (message.status === "processing") setVoiceStatus("Processing");
@@ -132,8 +131,12 @@ function LiveCall({ onEndCall, onOpenEscalationDesk, isAdmin = false }: LiveCall
   });
 
   const recorder = useAudioRecorder({
-    onAudioChunk: (chunk, mimeType) => {
-      socket.sendAudioChunk(chunk, mimeType);
+    onRecordingComplete: async (audio, mimeType) => {
+      setVoiceStatus("Uploading recording");
+      setIsAnalyzing(true);
+      const buffer = await audio.arrayBuffer();
+      socket.sendAudioRecording(buffer, mimeType);
+      socket.endAudioStream();
     },
     onError: (error) => {
       const permissionMessage =
@@ -147,8 +150,8 @@ function LiveCall({ onEndCall, onOpenEscalationDesk, isAdmin = false }: LiveCall
 
   useEffect(() => {
     if (!socket.connected) return;
-    socket.startCall(languageCode(language));
-  }, [language, socket.connected]);
+    socket.startCall(languageCode(language), customerId);
+  }, [customerId, language, socket.connected]);
 
   function detectLanguage(text: string) {
     if (/[\u0900-\u097F]/.test(text)) return "Hindi";
@@ -177,21 +180,20 @@ function LiveCall({ onEndCall, onOpenEscalationDesk, isAdmin = false }: LiveCall
     ]);
     setInputText("");
 
-    socket.sendUserMessage(trimmed, languageCode(language));
+    socket.sendUserMessage(trimmed, languageCode(language), customerId);
   }
 
   async function startVoiceSession() {
     setMicError(null);
     setVoiceStatus("Requesting mic permission");
-    socket.startAudioStream(languageCode(language));
+    socket.startAudioStream(languageCode(language), customerId);
     await recorder.startRecording();
-    setVoiceStatus("Listening");
+    setVoiceStatus("Recording");
   }
 
   async function stopVoiceSession() {
+    setVoiceStatus("Preparing recording");
     await recorder.stopRecording();
-    socket.endAudioStream();
-    setVoiceStatus("Idle");
   }
 
   function toggleVoiceSession() {

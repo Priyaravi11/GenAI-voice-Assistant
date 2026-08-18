@@ -33,200 +33,531 @@ logger = get_logger(__name__)
 
 class GeminiLiveSession:
     """
-    Manages a single Gemini Live audio session.
-    
-    Handles:
-    - Session lifecycle (connect, send, receive, close)
-    - Audio encoding/decoding
-    - Message serialization
-    - Error handling and reconnection
+    Manages one Gemini Live session.
+
+    IMPORTANT:
+    Only ONE coroutine is allowed to consume session.receive().
     """
 
-    def __init__(self, session_id: str, language: str = "en"):
-        """
-        Initialize a Gemini Live session.
-        
-        Args:
-            session_id: Unique session identifier
-            language: Language code (en, es, fr, etc.)
-        """
+    def __init__(
+        self,
+        session_id: str,
+        language: str = "en",
+    ):
         self.session_id = session_id
         self.language = language
+
+        self._session_context = None
         self.session = None
+
         self.connected = False
         self.message_count = 0
-        self.logger = logging.getLogger(f"GeminiLive-{session_id}")
+
+        self.logger = logging.getLogger(
+            f"GeminiLive-{session_id}"
+        )
+
+        # ----------------------------------------------------
+        # Receive protection
+        # ----------------------------------------------------
+
+        self._receive_task = None
+
+        # ----------------------------------------------------
+        # Send protection
+        # ----------------------------------------------------
+
+        self._send_lock = asyncio.Lock()
+
+        # ----------------------------------------------------
+        # Lifecycle protection
+        # ----------------------------------------------------
+
+        self._close_lock = asyncio.Lock()
+
+    # ========================================================
+    # CONNECT
+    # ========================================================
 
     async def connect(self) -> bool:
         """
         Establish connection to Gemini Live API.
-        
-        Returns:
-            True if connection successful, False otherwise
         """
+
         try:
             if client is None:
-                self.logger.error("Gemini client is not configured")
+                self.logger.error(
+                    "Gemini client is not configured"
+                )
                 return False
 
-            self.logger.info(f"Connecting to Gemini Live (language: {self.language})")
-            
-            config = get_live_config()
-            self.session = await client.aio.live.connect(
-                model=GEMINI_LIVE_MODEL,
-                config=config,
+            # Prevent duplicate connection
+            if self.connected and self.session:
+                self.logger.warning(
+                    f"Session {self.session_id} "
+                    f"already connected"
+                )
+                return True
+
+            self.logger.info(
+                f"Connecting to Gemini Live "
+                f"(language: {self.language})"
             )
-            
-            self.connected = True
-            self.logger.info("Connected to Gemini Live successfully")
-            return True
 
-        except GoogleAPIError as e:
-            self.logger.error(f"Google API error: {str(e)}")
-            return False
-        except Exception as e:
-            self.logger.error(f"Connection failed: {str(e)}")
-            return False
+            config = get_live_config()
 
-    async def send_audio(self, audio_bytes: bytes, mime_type: str = "audio/wav") -> bool:
-        """
-        Send audio bytes to Gemini Live.
-        
-        Args:
-            audio_bytes: Raw audio data
-            mime_type: Audio format (audio/wav, audio/mp3, audio/ogg, etc.)
-            
-        Returns:
-            True if sent successfully, False otherwise
-        """
-        if not self.connected or not self.session:
-            self.logger.error("Session not connected")
-            return False
-
-        try:
-            await self.session.send_realtime_input(
-                audio=types.Blob(
-                    data=audio_bytes,
-                    mime_type=mime_type,
+            self._session_context = (
+                client.aio.live.connect(
+                    model=GEMINI_LIVE_MODEL,
+                    config=config,
                 )
             )
 
-            self.logger.debug(f"Sent {len(audio_bytes)} bytes of audio")
+            self.session = (
+                await self._session_context.__aenter__()
+            )
+
+            self.connected = True
+
+            self.logger.info(
+                "Connected to Gemini Live successfully"
+            )
+
             return True
 
-        except Exception as e:
-            self.logger.error(f"Failed to send audio: {str(e)}")
+        except GoogleAPIError as e:
+            self.logger.error(
+                f"Google API error: {str(e)}"
+            )
             return False
 
-    async def send_text(self, text: str) -> bool:
+        except Exception as e:
+            self.logger.exception(
+                f"Connection failed: {str(e)}"
+            )
+
+            self.session = None
+            self._session_context = None
+            self.connected = False
+
+            return False
+
+    # ========================================================
+    # SEND AUDIO
+    # ========================================================
+
+    async def send_audio(
+        self,
+        audio_bytes: bytes,
+        mime_type: str = "audio/wav",
+    ) -> bool:
         """
-        Send text to Gemini Live (fallback if audio unavailable).
-        
-        Args:
-            text: Text message
-            
-        Returns:
-            True if sent successfully, False otherwise
+        Send audio bytes to Gemini Live.
         """
+
         if not self.connected or not self.session:
-            self.logger.error("Session not connected")
+            self.logger.error(
+                "Session not connected"
+            )
             return False
 
         try:
-            await self.session.send_realtime_input(text=text)
+            # Serialize outgoing messages
+            async with self._send_lock:
 
-            self.logger.debug(f"Sent text: {text[:50]}...")
+                await self.session.send_realtime_input(
+                    audio=types.Blob(
+                        data=audio_bytes,
+                        mime_type=mime_type,
+                    )
+                )
+
+            self.logger.debug(
+                f"Sent {len(audio_bytes)} bytes of audio"
+            )
+
             return True
 
         except Exception as e:
-            self.logger.error(f"Failed to send text: {str(e)}")
+            self.logger.error(
+                f"Failed to send audio: {str(e)}"
+            )
             return False
 
-    async def receive_response(self) -> AsyncIterator[Dict[str, Any]]:
+    # ========================================================
+    # SEND TEXT
+    # ========================================================
+
+    async def send_text(
+        self,
+        text: str,
+    ) -> bool:
+        """
+        Send text to Gemini Live.
+        """
+
+        if not self.connected or not self.session:
+            self.logger.error(
+                "Session not connected"
+            )
+            return False
+
+        try:
+            # Serialize outgoing messages
+            async with self._send_lock:
+
+                await self.session.send_realtime_input(
+                    text=text
+                )
+
+            self.logger.debug(
+                f"Sent text: {text[:50]}..."
+            )
+
+            return True
+
+        except Exception as e:
+            self.logger.error(
+                f"Failed to send text: {str(e)}"
+            )
+            return False
+
+    # ========================================================
+    # RECEIVE RESPONSE
+    # ========================================================
+
+    async def receive_response(
+        self,
+    ) -> AsyncIterator[Dict[str, Any]]:
         """
         Receive streaming responses from Gemini Live.
-        
-        Yields:
-            Dict with keys:
-            - type: 'audio' or 'text'
-            - content: audio bytes or text string
-            - transcript: text transcript if available
-            - done: True if response complete
+
+        IMPORTANT:
+        Only one asyncio task may execute
+        self.session.receive().
         """
+
         if not self.connected or not self.session:
-            self.logger.error("Session not connected")
+            self.logger.error(
+                "Session not connected"
+            )
             return
 
+        # ----------------------------------------------------
+        # Prevent multiple receive() consumers
+        # ----------------------------------------------------
+
+        current_task = asyncio.current_task()
+
+        if self._receive_task is not None:
+
+            if self._receive_task != current_task:
+
+                self.logger.warning(
+                    f"Receive loop already running "
+                    f"for session {self.session_id}"
+                )
+
+                yield {
+                    "type": "error",
+                    "content": (
+                        "Receive loop already running "
+                        "for this Gemini Live session"
+                    ),
+                    "done": True,
+                }
+
+                return
+
+        # This task now owns receive()
+        self._receive_task = current_task
+
+        self.logger.info(
+            f"Gemini Live receive loop started: "
+            f"{self.session_id}"
+        )
+
         try:
+
+            # ------------------------------------------------
+            # ONLY THIS TASK calls session.receive()
+            # ------------------------------------------------
+
             async for response in self.session.receive():
+
                 self.message_count += 1
 
-                # Handle server content (response from Gemini)
-                if response.server_content:
-                    if getattr(response.server_content, "input_transcription", None):
-                        transcript = response.server_content.input_transcription.text
-                        if transcript:
-                            yield {
-                                "type": "input_transcript",
-                                "content": transcript,
-                                "done": False,
-                            }
+                # --------------------------------------------
+                # Server content
+                # --------------------------------------------
 
-                    if getattr(response.server_content, "output_transcription", None):
-                        transcript = response.server_content.output_transcription.text
-                        if transcript:
-                            yield {
-                                "type": "output_transcript",
-                                "content": transcript,
-                                "done": False,
-                            }
+                server_content = getattr(
+                    response,
+                    "server_content",
+                    None,
+                )
 
-                    if getattr(response.server_content, "model_turn", None):
-                        for part in response.server_content.model_turn.parts:
-                            if part.inline_data:
-                                yield {
-                                    "type": "audio",
-                                    "mime_type": part.inline_data.mime_type,
-                                    "content": part.inline_data.data,
-                                    "done": False,
-                                }
+                if not server_content:
+                    continue
 
-                            elif part.text:
-                                yield {
-                                    "type": "text",
-                                    "content": part.text,
-                                    "done": False,
-                                }
+                # --------------------------------------------
+                # Input transcription
+                # --------------------------------------------
 
-                    if getattr(response.server_content, "turn_complete", False):
+                input_transcription = getattr(
+                    server_content,
+                    "input_transcription",
+                    None,
+                )
+
+                if input_transcription:
+
+                    transcript = getattr(
+                        input_transcription,
+                        "text",
+                        None,
+                    )
+
+                    if transcript:
+
                         yield {
-                            "type": "turn_complete",
-                            "done": True,
+                            "type": "input_transcript",
+                            "content": transcript,
+                            "done": False,
                         }
 
+                # --------------------------------------------
+                # Output transcription
+                # --------------------------------------------
+
+                output_transcription = getattr(
+                    server_content,
+                    "output_transcription",
+                    None,
+                )
+
+                if output_transcription:
+
+                    transcript = getattr(
+                        output_transcription,
+                        "text",
+                        None,
+                    )
+
+                    if transcript:
+
+                        yield {
+                            "type": "output_transcript",
+                            "content": transcript,
+                            "done": False,
+                        }
+
+                # --------------------------------------------
+                # Model turn
+                # --------------------------------------------
+
+                model_turn = getattr(
+                    server_content,
+                    "model_turn",
+                    None,
+                )
+
+                if model_turn:
+
+                    parts = getattr(
+                        model_turn,
+                        "parts",
+                        [],
+                    )
+
+                    for part in parts:
+
+                        # ------------------------------------
+                        # Audio response
+                        # ------------------------------------
+
+                        inline_data = getattr(
+                            part,
+                            "inline_data",
+                            None,
+                        )
+
+                        if inline_data:
+
+                            yield {
+                                "type": "audio",
+                                "mime_type": getattr(
+                                    inline_data,
+                                    "mime_type",
+                                    "audio/pcm",
+                                ),
+                                "content": inline_data.data,
+                                "done": False,
+                            }
+
+                        # ------------------------------------
+                        # Text response
+                        # ------------------------------------
+
+                        text = getattr(
+                            part,
+                            "text",
+                            None,
+                        )
+
+                        if text:
+
+                            yield {
+                                "type": "text",
+                                "content": text,
+                                "done": False,
+                            }
+
+                # --------------------------------------------
+                # Turn complete
+                # --------------------------------------------
+
+                if getattr(
+                    server_content,
+                    "turn_complete",
+                    False,
+                ):
+
+                    yield {
+                        "type": "turn_complete",
+                        "done": True,
+                    }
+
         except asyncio.CancelledError:
-            self.logger.info("Session receive cancelled")
+
+            self.logger.info(
+                f"Receive loop cancelled: "
+                f"{self.session_id}"
+            )
+
+            raise
+
         except Exception as e:
-            self.logger.error(f"Error receiving response: {str(e)}")
+
+            error_message = str(e)
+
+            # --------------------------------------------
+            # Normal WebSocket close
+            # --------------------------------------------
+
+            if "1000" in error_message:
+
+                self.logger.info(
+                    f"Gemini Live connection closed "
+                    f"normally: {self.session_id}"
+                )
+
+                return
+
+            # --------------------------------------------
+            # Actual error
+            # --------------------------------------------
+
+            self.logger.exception(
+                f"Error receiving response: "
+                f"{error_message}"
+            )
+
             yield {
                 "type": "error",
-                "content": str(e),
+                "content": error_message,
                 "done": True,
             }
 
+        finally:
+
+            # Only clear if THIS task owns the receiver
+            if self._receive_task == current_task:
+
+                self._receive_task = None
+
+            self.logger.info(
+                f"Gemini Live receive loop ended: "
+                f"{self.session_id}"
+            )
+
+    # ========================================================
+    # CLOSE
+    # ========================================================
+
     async def close(self) -> None:
         """
-        Close Gemini Live session.
+        Close Gemini Live session safely.
         """
-        try:
-            if self.session:
-                await self.session.close()
-            self.connected = False
-            self.logger.info("Session closed")
-        except Exception as e:
-            self.logger.error(f"Error closing session: {str(e)}")
 
+        async with self._close_lock:
 
+            self.logger.info(
+                f"Closing Gemini Live session: "
+                f"{self.session_id}"
+            )
+
+            # ------------------------------------------------
+            # Stop receive task
+            # ------------------------------------------------
+
+            current_task = asyncio.current_task()
+
+            if (
+                self._receive_task
+                and self._receive_task != current_task
+                and not self._receive_task.done()
+            ):
+
+                self.logger.info(
+                    f"Cancelling receive task: "
+                    f"{self.session_id}"
+                )
+
+                self._receive_task.cancel()
+
+                try:
+                    await self._receive_task
+
+                except asyncio.CancelledError:
+                    pass
+
+                except Exception:
+                    pass
+
+            self._receive_task = None
+
+            # ------------------------------------------------
+            # Close Gemini connection
+            # ------------------------------------------------
+
+            try:
+
+                if self._session_context:
+
+                    await self._session_context.__aexit__(
+                        None,
+                        None,
+                        None,
+                    )
+
+            except Exception as e:
+
+                self.logger.warning(
+                    f"Error closing Gemini connection: "
+                    f"{str(e)}"
+                )
+
+            finally:
+
+                self.session = None
+                self._session_context = None
+                self.connected = False
+
+                self.logger.info(
+                    f"Session closed: "
+                    f"{self.session_id}"
+                )
 # ============================================================
 # Global Session Manager
 # ============================================================

@@ -1,3 +1,4 @@
+import os
 import chromadb
 from pathlib import Path
 
@@ -16,11 +17,14 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
+configured_chroma_path = Path(
+    os.getenv("CHROMA_PATH", "rag/data/chroma")
+)
+
 CHROMA_PATH = (
-    PROJECT_ROOT
-    / "rag"
-    / "data"
-    / "chroma"
+    configured_chroma_path
+    if configured_chroma_path.is_absolute()
+    else PROJECT_ROOT / configured_chroma_path
 )
 
 
